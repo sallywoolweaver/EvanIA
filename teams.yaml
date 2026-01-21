@@ -1,192 +1,172 @@
+# NCAA Men's Water Polo (commonly referred to as "D1" programs).
+# Update/extend as needed. "season" is the season year used by schedule/stats URLs.
+# If a site needs JS to render the roster, set use_playwright: true for that team.
+# If a site has TLS issues, set ssl_verify: false (not recommended unless necessary).
 teams:
-- school: UCLA
-  ncaa_name: UCLA
-  roster_url: https://uclabruins.com/sports/mens-water-polo/roster
-  division: D1
-- school: USC
-  ncaa_name: Southern California
-  roster_url: https://usctrojans.com/sports/mens-water-polo/roster
-  division: D1
-- school: Stanford
-  ncaa_name: Stanford
-  roster_url: https://gostanford.com/sports/mens-water-polo/roster
-  division: D1
-- school: California
-  ncaa_name: California (Cal.)
-  roster_url: https://calbears.com/sports/mens-water-polo/roster
-  division: D1
-- school: Fordham
-  ncaa_name: Fordham
-  roster_url: https://fordhamsports.com/sports/mens-water-polo/roster
-  division: D1
-- school: San Jose State
-  ncaa_name: San José St.
-  roster_url: https://sjsuspartans.com/sports/mens-water-polo/roster
-  division: D1
-- school: Long Beach State
-  ncaa_name: Long Beach St.
-  roster_url: https://longbeachstate.com/sports/mens-water-polo/roster
-  division: D1
-- school: UC San Diego
-  ncaa_name: UC San Diego
-  roster_url: https://ucsdtritons.com/sports/mens-water-polo/roster
-  division: D1
-- school: Princeton
-  ncaa_name: Princeton
-  roster_url: https://goprincetontigers.com/sports/mens-water-polo/roster
-  division: D1
-- school: Pepperdine
-  ncaa_name: Pepperdine
-  roster_url: https://pepperdinewaves.com/sports/mens-water-polo/roster
-  division: D1
-- school: UC Davis
-  ncaa_name: UC Davis
-  roster_url: https://ucdavisaggies.com/sports/mens-water-polo/roster
-  division: D1
-- school: UC Irvine
-  ncaa_name: UC Irvine
-  roster_url: https://ucirvinesports.com/sports/mens-water-polo/roster
-  division: D1
-- school: California Baptist
-  ncaa_name: California Baptist
-  roster_url: https://cbulancers.com/sports/mens-water-polo/roster
-  division: D1
-- school: Loyola Marymount
-  ncaa_name: Loyola Marymount
-  roster_url: https://lmulions.com/sports/mens-water-polo/roster
-  division: D1
-- school: Pacific
-  ncaa_name: Pacific
-  roster_url: https://pacifictigers.com/sports/mens-water-polo/roster
-  division: D1
-- school: Harvard
-  ncaa_name: Harvard
-  roster_url: https://gocrimson.com/sports/mens-water-polo/roster/2025
-  division: D1
-- school: UC Santa Barbara
-  ncaa_name: UC Santa Barbara
-  roster_url: https://ucsbgauchos.com/sports/mens-water-polo/roster
-  division: D1
-- school: Navy
-  ncaa_name: Navy
-  roster_url: https://navysports.com/sports/mens-water-polo/roster
-  division: D1
-- school: Brown
-  ncaa_name: Brown
-  roster_url: https://brownbears.com/roster.aspx?path=mwpolo
-  division: D1
-- school: George Washington
-  ncaa_name: George Washington
-  roster_url: https://gwsports.com/sports/mens-water-polo/roster
-  division: D1
-- school: Santa Clara
-  ncaa_name: Santa Clara
-  roster_url: https://santaclarabroncos.com/sports/mens-water-polo/roster
-  division: D1
-- school: Air Force
-  ncaa_name: Air Force
-  roster_url: https://goairforcefalcons.com/sports/mens-water-polo/roster
-  division: D1
-- school: Cal State Fullerton
-  ncaa_name: Cal St. Fullerton
-  roster_url: https://fullertontitans.com/sports/mens-water-polo/roster
-- school: Concordia Irvine
-  ncaa_name: Concordia (CA)
-  roster_url: https://cuigoldeneagles.com/sports/mens-water-polo/roster
-- school: Johns Hopkins
-  ncaa_name: Johns Hopkins
-  roster_url: https://hopkinssports.com/sports/mens-water-polo/roster
-- school: Bucknell
-  ncaa_name: Bucknell
-  roster_url: https://bucknellbison.com/sports/mens-water-polo/roster
-  division: D1
-- school: Wagner
-  ncaa_name: Wagner
-  roster_url: https://wagnerathletics.com/sports/mens-polo/roster
-  division: D1
-- school: Salem (WV)
-  ncaa_name: Salem (WV)
-  roster_url: https://salemtigers.com/sports/mens-water-polo/roster
-- school: McKendree
-  ncaa_name: McKendree
-  roster_url: https://mckbearcats.com/sports/mens-water-polo/roster
-- school: Mercyhurst
-  ncaa_name: Mercyhurst
-  roster_url: https://hurstathletics.com/sports/mens-water-polo/roster
-- school: Gannon
-  ncaa_name: Gannon
-  roster_url: https://gannonsports.com/sports/mens-water-polo/roster
-- school: Mount St. Mary's
-  ncaa_name: Mount St. Mary's
-  roster_url: https://mountathletics.com/sports/mens-water-polo/roster
-  division: D1
-- school: Iona
-  ncaa_name: Iona
-  roster_url: https://ionagaels.com/sports/mens-water-polo/roster
-  division: D1
-- school: LIU
-  ncaa_name: LIU
-  roster_url: https://www.liuathletics.com/sports/mens-water-polo/roster
-  division: D1
-- school: UC Merced
-  ncaa_name: UC Merced
-  roster_url: https://ucmercedbobcats.com/sports/mens-water-polo/roster
-- school: Fresno Pacific
-  ncaa_name: Fresno Pacific
-  roster_url: https://fpusunbirds.com/sports/mens-water-polo/roster
-- school: Penn State Behrend
-  ncaa_name: Penn St. Behrend
-  roster_url: https://psblions.com/sports/mwaterpolo/2025-26/roster
-- school: Connecticut College
-  ncaa_name: Connecticut College
-  roster_url: https://camelathletics.com/sports/mens-water-polo/roster
-- school: Washington & Jefferson
-  ncaa_name: Wash. & Jeff.
-  roster_url: https://gopresidents.com/sports/mens-water-polo/roster
-- school: Wheaton (MA)
-  ncaa_name: Wheaton (MA)
-  roster_url: https://wheatoncollegelyons.com/sports/mens-water-polo/roster
-- school: Austin College
-  ncaa_name: Austin
-  roster_url: https://acroos.com/sports/mwaterpolo/2025-26/roster
-- school: Augustana (IL)
-  ncaa_name: Augustana (IL)
-  roster_url: https://athletics.augustana.edu/sports/mens-water-polo/roster
-- school: Occidental
-  ncaa_name: Occidental
-  roster_url: https://oxyathletics.com/sports/mens-water-polo/roster
-- school: Chapman
-  ncaa_name: Chapman
-  roster_url: https://athletics.chapman.edu/sports/mens-water-polo/roster
-- school: La Verne
-  ncaa_name: La Verne
-  roster_url: https://leopardathletics.com/sports/mwpolo/roster
-- school: Cal Lutheran
-  ncaa_name: Cal Lutheran
-  roster_url: https://www.clusports.com/sports/mens-water-polo/roster
-- school: Biola
-  ncaa_name: Biola
-  roster_url: https://athletics.biola.edu/sports/mens-water-polo/roster
-- school: Caltech
-  ncaa_name: Caltech
-  roster_url: https://athletics.caltech.edu/sports/mens-water-polo/roster
-- school: Pomona-Pitzer
-  ncaa_name: Pomona-Pitzer
-  roster_url: https://sagehens.com/sports/mens-water-polo/roster
-- school: Claremont-Mudd-Scripps
-  ncaa_name: Claremont-M-S
-  roster_url: https://cmsathletics.org/sports/mens-water-polo/roster
-- school: Whittier
-  ncaa_name: Whittier
-  roster_url: https://poetsathletics.com/sports/mens-water-polo/roster
-- school: Redlands
-  ncaa_name: Redlands
-  roster_url: https://goredlands.com/sports/mens-water-polo/roster
-- school: MIT
-  ncaa_name: MIT
-  roster_url: https://mitathletics.com/sports/mens-water-polo/roster
-- school: La Salle
-  roster_url: https://goexplorers.com/sports/mens-water-polo/roster
-  ncaa_name: La Salle
-  division: D1
-  record_url: https://goexplorers.com/sports/mens-water-polo/schedule
+  - school: UCLA
+    season: 2025
+    roster_url: https://uclabruins.com/sports/mens-water-polo/roster
+    schedule_url: https://uclabruins.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://uclabruins.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: USC
+    season: 2025
+    roster_url: https://usctrojans.com/sports/mens-water-polo/roster
+    schedule_url: https://usctrojans.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://usctrojans.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Stanford
+    season: 2025
+    roster_url: https://gostanford.com/sports/mens-water-polo/roster
+    schedule_url: https://gostanford.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://gostanford.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: California
+    season: 2025
+    roster_url: https://calbears.com/sports/mens-water-polo/roster
+    schedule_url: https://calbears.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://calbears.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: UC San Diego
+    season: 2025
+    roster_url: https://ucsdtritons.com/sports/mens-water-polo/roster/2025
+    schedule_url: https://ucsdtritons.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://ucsdtritons.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: California Baptist
+    season: 2025
+    roster_url: https://cbulancers.com/sports/mens-water-polo/roster
+    schedule_url: https://cbulancers.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://cbulancers.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Pepperdine
+    season: 2025
+    roster_url: https://pepperdinewaves.com/sports/mens-water-polo/roster
+    schedule_url: https://pepperdinewaves.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://pepperdinewaves.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: UC Irvine
+    season: 2025
+    roster_url: https://ucirvinesports.com/sports/mens-water-polo/roster
+    schedule_url: https://ucirvinesports.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://ucirvinesports.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: UC Davis
+    season: 2025
+    roster_url: https://ucdavisaggies.com/sports/mens-water-polo/roster
+    schedule_url: https://ucdavisaggies.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://ucdavisaggies.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: UC Santa Barbara
+    season: 2025
+    roster_url: https://ucsbgauchos.com/sports/mens-water-polo/roster
+    schedule_url: https://ucsbgauchos.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://ucsbgauchos.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Long Beach State
+    season: 2025
+    roster_url: https://longbeachstate.com/sports/mens-water-polo/roster
+    schedule_url: https://longbeachstate.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://longbeachstate.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: San Jose State
+    season: 2025
+    roster_url: https://sjsuspartans.com/sports/mens-water-polo/roster
+    schedule_url: https://sjsuspartans.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://sjsuspartans.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Pacific
+    season: 2025
+    roster_url: https://pacifictigers.com/sports/mens-water-polo/roster
+    schedule_url: https://pacifictigers.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://pacifictigers.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Loyola Marymount
+    season: 2025
+    roster_url: https://lmulions.com/sports/mens-water-polo/roster
+    schedule_url: https://lmulions.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://lmulions.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Princeton
+    season: 2025
+    roster_url: https://goprincetontigers.com/sports/mens-water-polo/roster
+    schedule_url: https://goprincetontigers.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://goprincetontigers.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Harvard
+    season: 2025
+    roster_url: https://gocrimson.com/sports/mens-water-polo/roster
+    schedule_url: https://gocrimson.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://gocrimson.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Brown
+    season: 2025
+    roster_url: https://brownbears.com/sports/mens-water-polo/roster
+    schedule_url: https://brownbears.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://brownbears.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Fordham
+    season: 2025
+    roster_url: https://fordhamsports.com/sports/mens-water-polo/roster
+    schedule_url: https://fordhamsports.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://fordhamsports.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Navy
+    season: 2025
+    roster_url: https://navysports.com/sports/mens-water-polo/roster
+    schedule_url: https://navysports.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://navysports.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Wagner
+    season: 2025
+    roster_url: https://wagnerathletics.com/sports/mens-water-polo/roster
+    schedule_url: https://wagnerathletics.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://wagnerathletics.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Bucknell
+    season: 2025
+    roster_url: https://bucknellbison.com/sports/mens-water-polo/roster
+    schedule_url: https://bucknellbison.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://bucknellbison.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Iona
+    season: 2025
+    roster_url: https://ionagaels.com/sports/mens-water-polo/roster
+    schedule_url: https://ionagaels.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://ionagaels.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: LIU
+    season: 2025
+    roster_url: https://liubk.com/sports/mens-water-polo/roster
+    schedule_url: https://liubk.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://liubk.com/sports/mens-water-polo/stats/2025
+    use_playwright: false
+
+  - school: Mount St. Mary's
+    season: 2025
+    roster_url: https://mountathletics.com/sports/mens-water-polo/roster
+    schedule_url: https://mountathletics.com/sports/mens-water-polo/schedule/2025
+    stats_url: https://mountathletics.com/sports/mens-water-polo/stats/2025
+    use_playwright: false

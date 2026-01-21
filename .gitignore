@@ -1,0 +1,4 @@
+.venv/*
+.venv
+.venv/pyvenv.cfg
+__pycache__/wp_utils.cpython-312.pyc
