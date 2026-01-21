@@ -2,341 +2,372 @@
 """
 scrape_rosters.py
 
-Scrape NCAA men's water polo rosters for:
-- school
-- team record (from NCAA RPI page)
-- player height
-- hometown
-- class + estimated graduation year
+Scrapes NCAA men's water polo roster pages from a curated list of team roster URLs
+(typically SidearmSports/Presto sites) and outputs a CSV and/or Excel file with:
 
-Outputs a CSV.
+- school
+- player_name
+- position
+- height
+- hometown
+- class_year
+- record (team W-L from NCAA RPI page, best-effort)
+- source_url (the roster URL used)
+
+Notes:
+- College roster pages are not standardized. This script supports common patterns
+  (Sidearm "sidearm-roster-player", and PrestoSports "roster-player").
+- Some athletics sites may rate-limit or block scraping. This script will continue
+  on errors and write whatever data it could retrieve.
 
 Usage:
-  python scrape_rosters.py --out ncaa_mwp_rosters.csv --grad_base_year 2026
-  python scrape_rosters.py --teams teams.yaml --out out.csv --sleep 0.75
+  python scrape_rosters.py --out waterpolo_rosters.csv
+  python scrape_rosters.py --out waterpolo_rosters.csv --xls waterpolo_rosters.xlsx
+  python scrape_rosters.py --team UCLA --out ucla.csv
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import sys
 import time
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
 import yaml
 from bs4 import BeautifulSoup
 
+DEFAULT_TEAMS_YAML = Path(__file__).resolve().parent / "teams.yaml"
 
-DEFAULT_RPI_URL = "https://www.ncaa.com/rankings/water-polo-men/nc/ncaa-mens-water-polo-rpi"
+# Updated NCAA RPI page (your previous URL 404s)
+DEFAULT_RPI_URL = "https://www.ncaa.com/rankings/waterpolo-men/nc/rpi"
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/121.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip()).lower()
-
-
-def parse_height_to_inches(h: str) -> Optional[int]:
-    if not h:
-        return None
-    s = h.strip()
-    # Common formats: 6-4, 6' 4'', 6'4", 6’4”, 6 4
-    m = re.search(r"(\d)\s*[-'’]\s*(\d{1,2})", s)
-    if not m:
-        m = re.search(r"(\d)\s+(\d{1,2})", s)
-    if not m:
-        return None
-    ft = int(m.group(1))
-    inch = int(m.group(2))
-    if ft < 4 or ft > 8 or inch < 0 or inch > 11:
-        return None
-    return ft * 12 + inch
+TIMEOUT = 20
 
 
-def class_to_grad_year(class_raw: str, base_year: int) -> Optional[int]:
-    if not class_raw:
-        return None
-    c = _norm(class_raw)
-    # Normalize a few patterns:
-    # r-fr, rs-fr, redshirt freshman, etc.
-    c = c.replace("redshirt", "r").replace("rs", "r")
-    if "grad" in c or c in {"gr", "gs", "g"}:
-        return base_year
-    if c.startswith("r-"):
-        c = c[2:]
-    # Handle typical class labels
-    if c in {"fr", "freshman", "first-year", "fy"}:
-        return base_year + 3
-    if c in {"so", "sophomore"}:
-        return base_year + 2
-    if c in {"jr", "junior"}:
-        return base_year + 1
-    if c in {"sr", "senior"}:
-        return base_year
-    if "5" in c or "fifth" in c:
-        return base_year
-    return None
+@dataclass
+class Team:
+    school: str
+    roster_url: str
+    ncaa_name: Optional[str] = None  # name as it appears on NCAA page (optional)
 
 
-def load_teams(path: Path) -> List[Dict[str, str]]:
-    obj = yaml.safe_load(path.read_text())
-    teams = obj.get("teams", [])
+def load_teams(path: Path) -> List[Team]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    teams = []
+    for t in data.get("teams", []):
+        teams.append(
+            Team(
+                school=str(t["school"]).strip(),
+                roster_url=str(t["roster_url"]).strip(),
+                ncaa_name=(str(t.get("ncaa_name")).strip() if t.get("ncaa_name") else None),
+            )
+        )
     if not teams:
         raise ValueError(f"No teams found in {path}")
     return teams
 
 
-def fetch_record_map(rpi_url: str, timeout_s: int = 20) -> Dict[str, str]:
+def _request_get(url: str, max_retries: int = 3, sleep_s: float = 1.2) -> requests.Response:
+    last_exc: Optional[Exception] = None
+    for i in range(max_retries):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            # Do not raise here; caller may want to handle non-200
+            return r
+        except Exception as e:
+            last_exc = e
+            if i < max_retries - 1:
+                time.sleep(sleep_s * (i + 1))
+    raise RuntimeError(f"Failed GET {url}: {last_exc}")
+
+
+def fetch_ncaa_records(rpi_url: str) -> Dict[str, str]:
     """
-    Returns mapping: NCAA display team name -> record string (e.g., '23-5').
+    Returns a mapping {school_name_on_ncaa: 'W-L'} (best-effort).
+    This page format can change; we try table parsing first, then a robust text scan.
     """
-    html = requests.get(rpi_url, timeout=timeout_s, headers={"User-Agent": "Mozilla/5.0"}).text
-    soup = BeautifulSoup(html, "lxml")
-    table = soup.find("table")
-    if table is None:
-        # Try pandas as fallback
-        dfs = pd.read_html(html)
-        if not dfs:
-            return {}
-        df = dfs[0]
-        team_col = next((c for c in df.columns if _norm(str(c)) in {"team", "school"}), None)
-        rec_col = next((c for c in df.columns if "record" in _norm(str(c))), None)
-        if team_col and rec_col:
-            return {str(t).strip(): str(r).strip() for t, r in zip(df[team_col], df[rec_col])}
+    r = _request_get(rpi_url)
+    if r.status_code >= 400:
+        # Best-effort: if NCAA page is blocked/changed, skip records
         return {}
 
-    headers = [_norm(th.get_text(" ", strip=True)) for th in table.find_all("th")]
-    team_idx = None
-    rec_idx = None
-    for i, h in enumerate(headers):
-        if h in {"team", "school"}:
-            team_idx = i
-        if "record" in h:
-            rec_idx = i
+    soup = BeautifulSoup(r.text, "lxml")
 
-    record_map: Dict[str, str] = {}
-    for tr in table.find_all("tr"):
-        tds = tr.find_all(["td", "th"])
-        if not tds or rec_idx is None:
-            continue
-        cells = [td.get_text(" ", strip=True) for td in tds]
-
-        if team_idx is None:
-            if len(cells) >= 2:
-                team = cells[1].strip()
-            else:
-                continue
-        else:
-            if len(cells) <= team_idx:
-                continue
-            team = cells[team_idx].strip()
-
-        if len(cells) <= rec_idx:
-            continue
-        rec = cells[rec_idx].strip()
-        if team and re.match(r"^\d+\s*-\s*\d+", rec):
-            record_map[team] = rec.replace(" ", "")
-    return record_map
-
-
-def _extract_best_table(html: str) -> Optional[pd.DataFrame]:
-    """
-    Heuristic: choose the roster-ish table that contains 'Ht'/'Height' and 'Hometown' or 'Academic Year/Class'.
-    """
+    # 1) Try HTML tables
     try:
-        dfs = pd.read_html(html)
+        tables = pd.read_html(r.text)
+        # Heuristic: pick the first table that has a "School" column and "Record"
+        for df in tables:
+            cols = [c.strip().lower() for c in df.columns.astype(str)]
+            if any("school" == c for c in cols) and any("record" == c for c in cols):
+                # normalize
+                school_col = df.columns[cols.index("school")]
+                record_col = df.columns[cols.index("record")]
+                m = {}
+                for _, row in df.iterrows():
+                    sname = str(row[school_col]).strip()
+                    rec = str(row[record_col]).strip()
+                    if sname and re.match(r"^\d+\-\d+", rec):
+                        m[sname] = rec
+                if m:
+                    return m
     except Exception:
-        return None
+        pass
 
-    best = None
-    best_score = -1
-    for df in dfs:
-        cols = [_norm(str(c)) for c in df.columns]
-        score = 0
-        if any(c == "ht" or c == "ht." or "height" in c for c in cols):
-            score += 2
-        if any("hometown" in c for c in cols):
-            score += 2
-        if any("academic year" in c or c == "class" or c == "yr" for c in cols):
-            score += 1
-        if any("name" in c for c in cols):
-            score += 2
-        if score > best_score and len(df) >= 8:
-            best = df
-            best_score = score
-    return best
-
-
-def scrape_roster_table(url: str, timeout_s: int = 25) -> Tuple[Optional[pd.DataFrame], str]:
-    resp = requests.get(url, timeout=timeout_s, headers={"User-Agent": "Mozilla/5.0"})
-    resp.raise_for_status()
-    html = resp.text
-    df = _extract_best_table(html)
-    return df, html
-
-
-def parse_roster_cards(html: str) -> List[Dict[str, str]]:
-    """
-    Fallback parser for SIDEARM-ish "List View" pages where table extraction fails.
-    """
-    soup = BeautifulSoup(html, "lxml")
-    out: List[Dict[str, str]] = []
-
-    for card in soup.select(".sidearm-roster-player, .sidearm-roster-player-container, .roster-card"):
-        txt = card.get_text(" ", strip=True)
-        if not txt or len(txt) < 10:
+    # 2) Fallback: scan visible text lines like: "1 UCLA 27-2 MPSF"
+    text = soup.get_text("\n")
+    records: Dict[str, str] = {}
+    for line in text.splitlines():
+        line = " ".join(line.split())
+        if not line:
             continue
-
-        name = None
-        name_el = card.select_one(".sidearm-roster-player-name, .sidearm-roster-player-name a, .roster-name")
-        if name_el:
-            name = name_el.get_text(" ", strip=True)
-
-        height = None
-        ht_el = card.select_one(".sidearm-roster-player-height, .roster-height")
-        if ht_el:
-            height = ht_el.get_text(" ", strip=True)
-
-        hometown = None
-        htwn_el = card.select_one(".sidearm-roster-player-hometown, .roster-hometown")
-        if htwn_el:
-            hometown = htwn_el.get_text(" ", strip=True)
-
-        cls = None
-        cls_el = card.select_one(".sidearm-roster-player-academic-year, .sidearm-roster-player-year, .roster-year")
-        if cls_el:
-            cls = cls_el.get_text(" ", strip=True)
-
-        if name:
-            out.append({"Name": name, "Ht.": height or "", "Hometown": hometown or "", "Academic Year": cls or ""})
-
-    return out
+        # Must start with rank number, and contain a W-L token
+        if not re.match(r"^\d+\s+", line):
+            continue
+        toks = line.split()
+        if len(toks) < 3:
+            continue
+        # find first token that looks like record
+        rec_i = None
+        for j in range(1, min(len(toks), 8)):  # record tends to be early
+            if re.fullmatch(r"\d+\-\d+", toks[j]):
+                rec_i = j
+                break
+        if rec_i is None:
+            continue
+        rank = toks[0]
+        record = toks[rec_i]
+        school = " ".join(toks[1:rec_i]).strip()
+        if school and record:
+            records[school] = record
+    return records
 
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    cols = list(df.columns)
-    norm_map: Dict[str, str] = {}
-
-    for c in cols:
-        n = _norm(str(c))
-        if n in {"name", "full name"} or "name" in n:
-            norm_map[c] = "player"
-        elif n in {"ht", "ht.", "height"} or "height" in n:
-            norm_map[c] = "height_raw"
-        elif "hometown" in n:
-            norm_map[c] = "hometown"
-        elif n in {"academic year", "class", "yr", "year"} or "academic year" in n:
-            norm_map[c] = "class_raw"
-        elif "pos" in n:
-            norm_map[c] = "pos"
-        elif "no" in n or "jersey" in n:
-            norm_map[c] = "number"
-        else:
-            norm_map[c] = str(c)
-
-    out = df.rename(columns=norm_map)
-
-    for required in ["player", "height_raw", "hometown", "class_raw"]:
-        if required not in out.columns:
-            out[required] = ""
-    return out
-
-
-def clean_hometown(h: str) -> str:
+def normalize_height(h: str) -> str:
+    h = (h or "").strip()
     if not h:
         return ""
-    s = h.strip()
-    if "/" in s:
-        s = s.split("/")[0].strip()
-    return s
+    # Common forms: 6-4, 6'4", 6' 4", 6 ft 4 in
+    m = re.match(r"^\s*(\d)\s*[\-'\s]\s*(\d{1,2})\s*(?:\"|in|)\s*$", h)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.search(r"(\d)\s*ft\s*(\d{1,2})\s*in", h, re.I)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return h
 
 
-def main() -> int:
+def parse_sidearm_roster(soup: BeautifulSoup) -> List[dict]:
+    rows = []
+    players = soup.select(".sidearm-roster-player")
+    if not players:
+        return rows
+
+    for p in players:
+        name = p.select_one(".sidearm-roster-player-name")
+        if name:
+            name = " ".join(name.get_text(" ").split())
+        else:
+            name = ""
+
+        pos = p.select_one(".sidearm-roster-player-position-short")
+        pos = " ".join(pos.get_text(" ").split()) if pos else ""
+
+        height = p.select_one(".sidearm-roster-player-height")
+        height = normalize_height(" ".join(height.get_text(" ").split())) if height else ""
+
+        hometown = p.select_one(".sidearm-roster-player-hometown")
+        hometown = " ".join(hometown.get_text(" ").split()) if hometown else ""
+
+        year = p.select_one(".sidearm-roster-player-academic-year")
+        year = " ".join(year.get_text(" ").split()) if year else ""
+
+        if name:
+            rows.append(
+                dict(
+                    player_name=name,
+                    position=pos,
+                    height=height,
+                    hometown=hometown,
+                    class_year=year,
+                )
+            )
+    return rows
+
+
+def parse_presto_roster(soup: BeautifulSoup) -> List[dict]:
+    rows = []
+    players = soup.select(".roster-player")
+    if not players:
+        # another common presto pattern: table rows
+        table = soup.select_one("table.roster") or soup.select_one("table")
+        if table:
+            # try read_html for roster-like columns
+            try:
+                dfs = pd.read_html(str(table))
+                for df in dfs:
+                    cols = [c.strip().lower() for c in df.columns.astype(str)]
+                    # Common columns: Name, Pos, Ht, Hometown, Yr
+                    if any("name" in c for c in cols) and any(c in cols for c in ["pos", "position"]):
+                        name_col = df.columns[[i for i,c in enumerate(cols) if "name" in c][0]]
+                        pos_col = df.columns[[i for i,c in enumerate(cols) if c in ["pos", "position"]][0]]
+                        ht_col = df.columns[[i for i,c in enumerate(cols) if c in ["ht", "height"]][0]] if any(c in cols for c in ["ht","height"]) else None
+                        hometown_col = df.columns[[i for i,c in enumerate(cols) if "hometown" in c][0]] if any("hometown" in c for c in cols) else None
+                        yr_col = df.columns[[i for i,c in enumerate(cols) if c in ["yr","year","class"]][0]] if any(c in cols for c in ["yr","year","class"]) else None
+                        for _, r in df.iterrows():
+                            nm = str(r[name_col]).strip()
+                            if not nm or nm.lower() == "nan":
+                                continue
+                            rows.append(dict(
+                                player_name=nm,
+                                position=str(r[pos_col]).strip(),
+                                height=normalize_height(str(r[ht_col]).strip()) if ht_col is not None else "",
+                                hometown=str(r[hometown_col]).strip() if hometown_col is not None else "",
+                                class_year=str(r[yr_col]).strip() if yr_col is not None else "",
+                            ))
+                        if rows:
+                            return rows
+            except Exception:
+                pass
+        return rows
+
+    for p in players:
+        name = p.select_one(".name") or p.select_one(".roster-name")
+        name = " ".join(name.get_text(" ").split()) if name else ""
+
+        pos = p.select_one(".position") or p.select_one(".pos")
+        pos = " ".join(pos.get_text(" ").split()) if pos else ""
+
+        height = p.select_one(".height") or p.select_one(".ht")
+        height = normalize_height(" ".join(height.get_text(" ").split())) if height else ""
+
+        hometown = p.select_one(".hometown") or p.select_one(".home-town")
+        hometown = " ".join(hometown.get_text(" ").split()) if hometown else ""
+
+        year = p.select_one(".year") or p.select_one(".class")
+        year = " ".join(year.get_text(" ").split()) if year else ""
+
+        if name:
+            rows.append(
+                dict(
+                    player_name=name,
+                    position=pos,
+                    height=height,
+                    hometown=hometown,
+                    class_year=year,
+                )
+            )
+    return rows
+
+
+def scrape_team_roster(team: Team) -> Tuple[List[dict], Optional[str]]:
+    """
+    Returns (rows, error_message_if_any).
+    """
+    try:
+        r = _request_get(team.roster_url)
+        if r.status_code >= 400:
+            return [], f"HTTP {r.status_code}"
+        soup = BeautifulSoup(r.text, "lxml")
+
+        rows = parse_sidearm_roster(soup)
+        if not rows:
+            rows = parse_presto_roster(soup)
+
+        if not rows:
+            return [], "No players parsed (site layout not recognized or content requires JS)"
+        return rows, None
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--teams", type=str, default="teams.yaml", help="Path to teams.yaml")
-    ap.add_argument("--out", type=str, default="ncaa_mwp_rosters.csv", help="Output CSV path")
-    ap.add_argument("--rpi_url", type=str, default=DEFAULT_RPI_URL, help="NCAA RPI URL used for team records")
-    ap.add_argument("--grad_base_year", type=int, default=datetime.now().year, help="Base year for Sr graduation year (default: current year)")
-    ap.add_argument("--sleep", type=float, default=0.75, help="Seconds to sleep between requests")
-    ap.add_argument("--timeout", type=int, default=25, help="HTTP timeout seconds")
+    ap.add_argument("--teams", type=Path, default=DEFAULT_TEAMS_YAML, help="Path to teams.yaml")
+    ap.add_argument("--out", type=Path, required=True, help="Output CSV path")
+    ap.add_argument("--xls", type=Path, default=None, help="Optional Excel .xlsx output path")
+    ap.add_argument("--rpi-url", type=str, default=DEFAULT_RPI_URL, help="NCAA RPI URL used for team records")
+    ap.add_argument("--team", type=str, default=None, help="Only scrape one school (matches teams.yaml school field)")
+    ap.add_argument("--sleep", type=float, default=0.5, help="Sleep seconds between team requests")
     args = ap.parse_args()
 
-    teams_path = Path(args.teams)
-    if not teams_path.exists():
-        teams_path = Path(__file__).resolve().parent / args.teams
+    teams = load_teams(args.teams)
+    if args.team:
+        teams = [t for t in teams if t.school.lower() == args.team.lower()]
+        if not teams:
+            raise SystemExit(f"No team matched --team {args.team!r}")
 
-    teams = load_teams(teams_path)
-    print(f"[info] Loaded {len(teams)} teams from {teams_path}")
+    # Fetch records best-effort
+    records = fetch_ncaa_records(args.rpi_url)
 
-    print(f"[info] Fetching records from NCAA RPI page: {args.rpi_url}")
-    record_map = fetch_record_map(args.rpi_url, timeout_s=args.timeout)
-    print(f"[info] Records found: {len(record_map)} teams")
+    out_rows: List[dict] = []
+    errors: List[dict] = []
 
-    rows: List[Dict[str, Any]] = []
-    failures: List[Tuple[str, str]] = []
+    for idx, team in enumerate(teams, start=1):
+        ncaa_key = team.ncaa_name or team.school
+        team_record = records.get(ncaa_key, records.get(team.school, ""))
 
-    for t in teams:
-        school = t["school"]
-        ncaa_name = t.get("ncaa_name", school)
-        roster_url = t["roster_url"]
-        record = record_map.get(ncaa_name, "")
+        rows, err = scrape_team_roster(team)
+        if err:
+            errors.append(
+                dict(
+                    school=team.school,
+                    roster_url=team.roster_url,
+                    error=err,
+                )
+            )
+            print(f"[WARN] {team.school}: {err}", file=sys.stderr)
+        else:
+            for r in rows:
+                out_rows.append(
+                    dict(
+                        school=team.school,
+                        record=team_record,
+                        source_url=team.roster_url,
+                        **r,
+                    )
+                )
+            print(f"[OK] {team.school}: {len(rows)} players")
 
-        print(f"[team] {school} | record='{record}' | roster={roster_url}")
+        if idx < len(teams) and args.sleep > 0:
+            time.sleep(args.sleep)
 
-        try:
-            df, html = scrape_roster_table(roster_url, timeout_s=args.timeout)
-            if df is None or len(df) == 0:
-                card_rows = parse_roster_cards(html)
-                if card_rows:
-                    df = pd.DataFrame(card_rows)
+    # Always write outputs (even if empty), so you never end up with "nothing outputted"
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(out_rows, columns=[
+        "school", "record", "player_name", "position", "height", "hometown", "class_year", "source_url"
+    ])
+    df.to_csv(args.out, index=False)
 
-            if df is None or len(df) == 0:
-                raise RuntimeError("No roster table detected (table/card parsers failed).")
+    if args.xls:
+        args.xls.parent.mkdir(parents=True, exist_ok=True)
+        # Excel-friendly .xlsx (opens in Excel; avoids legacy .xls limitations)
+        df.to_excel(args.xls, index=False)
 
-            df = normalize_columns(df)
+    if errors:
+        err_path = args.out.with_name(args.out.stem + "_errors.csv")
+        pd.DataFrame(errors).to_csv(err_path, index=False)
+        print(f"[DONE] Wrote {len(df)} rows to {args.out} and {len(errors)} errors to {err_path}")
+    else:
+        print(f"[DONE] Wrote {len(df)} rows to {args.out}")
 
-            for _, r in df.iterrows():
-                player = str(r.get("player", "")).strip()
-                if not player or player.lower() in {"nan", "name"}:
-                    continue
-
-                height_raw = str(r.get("height_raw", "")).strip()
-                hometown = clean_hometown(str(r.get("hometown", "")).strip())
-                class_raw = str(r.get("class_raw", "")).strip()
-
-                rows.append({
-                    "school": school,
-                    "record": record,
-                    "player": player,
-                    "height_raw": height_raw,
-                    "height_in": parse_height_to_inches(height_raw),
-                    "hometown": hometown,
-                    "class_raw": class_raw,
-                    "grad_year_est": class_to_grad_year(class_raw, args.grad_base_year),
-                    "roster_url": roster_url,
-                })
-
-        except Exception as e:
-            failures.append((school, f"{type(e).__name__}: {e}"))
-            print(f"[warn] Failed {school}: {type(e).__name__}: {e}", file=sys.stderr)
-
-        time.sleep(max(0.0, args.sleep))
-
-    out_path = Path(args.out)
-    out_df = pd.DataFrame(rows).sort_values(["school", "player"]).reset_index(drop=True)
-    out_df.to_csv(out_path, index=False)
-    print(f"[done] Wrote {len(out_df)} rows to {out_path}")
-
-    if failures:
-        fail_path = out_path.with_suffix(".failures.txt")
-        fail_path.write_text("\n".join([f"{s}\t{err}" for s, err in failures]) + "\n")
-        print(f"[warn] {len(failures)} teams failed. See: {fail_path}")
-
-    return 0
+    if args.xls:
+        print(f"[DONE] Wrote Excel file to {args.xls}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
