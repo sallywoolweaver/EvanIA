@@ -2,69 +2,91 @@ teams:
 - school: UCLA
   ncaa_name: UCLA
   roster_url: https://uclabruins.com/sports/mens-water-polo/roster
+  division: D1
 - school: USC
   ncaa_name: Southern California
   roster_url: https://usctrojans.com/sports/mens-water-polo/roster
+  division: D1
 - school: Stanford
   ncaa_name: Stanford
   roster_url: https://gostanford.com/sports/mens-water-polo/roster
+  division: D1
 - school: California
   ncaa_name: California (Cal.)
   roster_url: https://calbears.com/sports/mens-water-polo/roster
+  division: D1
 - school: Fordham
   ncaa_name: Fordham
   roster_url: https://fordhamsports.com/sports/mens-water-polo/roster
+  division: D1
 - school: San Jose State
-  ncaa_name: "San Jos\xE9 St."
+  ncaa_name: San José St.
   roster_url: https://sjsuspartans.com/sports/mens-water-polo/roster
+  division: D1
 - school: Long Beach State
   ncaa_name: Long Beach St.
   roster_url: https://longbeachstate.com/sports/mens-water-polo/roster
+  division: D1
 - school: UC San Diego
   ncaa_name: UC San Diego
   roster_url: https://ucsdtritons.com/sports/mens-water-polo/roster
+  division: D1
 - school: Princeton
   ncaa_name: Princeton
   roster_url: https://goprincetontigers.com/sports/mens-water-polo/roster
+  division: D1
 - school: Pepperdine
   ncaa_name: Pepperdine
   roster_url: https://pepperdinewaves.com/sports/mens-water-polo/roster
+  division: D1
 - school: UC Davis
   ncaa_name: UC Davis
   roster_url: https://ucdavisaggies.com/sports/mens-water-polo/roster
+  division: D1
 - school: UC Irvine
   ncaa_name: UC Irvine
   roster_url: https://ucirvinesports.com/sports/mens-water-polo/roster
+  division: D1
 - school: California Baptist
   ncaa_name: California Baptist
   roster_url: https://cbulancers.com/sports/mens-water-polo/roster
+  division: D1
 - school: Loyola Marymount
   ncaa_name: Loyola Marymount
   roster_url: https://lmulions.com/sports/mens-water-polo/roster
+  division: D1
 - school: Pacific
   ncaa_name: Pacific
   roster_url: https://pacifictigers.com/sports/mens-water-polo/roster
+  division: D1
 - school: Harvard
   ncaa_name: Harvard
   roster_url: https://gocrimson.com/sports/mens-water-polo/roster/2025
+  division: D1
 - school: UC Santa Barbara
   ncaa_name: UC Santa Barbara
   roster_url: https://ucsbgauchos.com/sports/mens-water-polo/roster
+  division: D1
 - school: Navy
   ncaa_name: Navy
   roster_url: https://navysports.com/sports/mens-water-polo/roster
+  division: D1
 - school: Brown
   ncaa_name: Brown
   roster_url: https://brownbears.com/roster.aspx?path=mwpolo
+  division: D1
 - school: George Washington
   ncaa_name: George Washington
   roster_url: https://gwsports.com/sports/mens-water-polo/roster
+  division: D1
 - school: Santa Clara
   ncaa_name: Santa Clara
   roster_url: https://santaclarabroncos.com/sports/mens-water-polo/roster
+  division: D1
 - school: Air Force
   ncaa_name: Air Force
   roster_url: https://goairforcefalcons.com/sports/mens-water-polo/roster
+  division: D1
 - school: Cal State Fullerton
   ncaa_name: Cal St. Fullerton
   roster_url: https://fullertontitans.com/sports/mens-water-polo/roster
@@ -77,9 +99,11 @@ teams:
 - school: Bucknell
   ncaa_name: Bucknell
   roster_url: https://bucknellbison.com/sports/mens-water-polo/roster
+  division: D1
 - school: Wagner
   ncaa_name: Wagner
   roster_url: https://wagnerathletics.com/sports/mens-polo/roster
+  division: D1
 - school: Salem (WV)
   ncaa_name: Salem (WV)
   roster_url: https://salemtigers.com/sports/mens-water-polo/roster
@@ -95,12 +119,15 @@ teams:
 - school: Mount St. Mary's
   ncaa_name: Mount St. Mary's
   roster_url: https://mountathletics.com/sports/mens-water-polo/roster
+  division: D1
 - school: Iona
   ncaa_name: Iona
   roster_url: https://ionagaels.com/sports/mens-water-polo/roster
+  division: D1
 - school: LIU
   ncaa_name: LIU
   roster_url: https://www.liuathletics.com/sports/mens-water-polo/roster
+  division: D1
 - school: UC Merced
   ncaa_name: UC Merced
   roster_url: https://ucmercedbobcats.com/sports/mens-water-polo/roster
@@ -158,3 +185,8 @@ teams:
 - school: MIT
   ncaa_name: MIT
   roster_url: https://mitathletics.com/sports/mens-water-polo/roster
+- school: La Salle
+  roster_url: https://goexplorers.com/sports/mens-water-polo/roster
+  ncaa_name: La Salle
+  division: D1
+  record_url: https://goexplorers.com/sports/mens-water-polo/schedule
