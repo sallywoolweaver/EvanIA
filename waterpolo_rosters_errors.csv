@@ -1,3 +1,7 @@
-school,roster_url,error
-Stanford,https://gostanford.com/sports/mens-water-polo/roster,NameError: name 'parse_sidearm_text_roster' is not defined
-San Jose State,https://sjsuspartans.com/sports/mens-water-polo/roster,NameError: name 'parse_sidearm_text_roster' is not defined
+school,url,stage,error
+Stanford,https://gostanford.com/sports/mens-water-polo/schedule/2025,schedule,404 Client Error: Not Found for url: https://gostanford.com/sports/mens-water-polo/schedule/2025
+Stanford,https://gostanford.com/sports/mens-water-polo/stats/2025,stats,404 Client Error: Not Found for url: https://gostanford.com/sports/mens-water-polo/stats/2025
+San Jose State,https://sjsuspartans.com/sports/mens-water-polo/schedule/2025,schedule,404 Client Error: Not Found for url: https://sjsuspartans.com/sports/mens-water-polo/schedule/2025
+San Jose State,https://sjsuspartans.com/sports/mens-water-polo/stats/2025,stats,404 Client Error: Not Found for url: https://sjsuspartans.com/sports/mens-water-polo/stats/2025
+Wagner,https://wagnerathletics.com/sports/mens-water-polo/roster,roster,404 Client Error: Not Found for url: https://wagnerathletics.com/404-1.aspx?url=%2froster.aspx%3fpath%3dgeneral%26
+LIU,https://liubk.com/sports/mens-water-polo/roster,roster,"HTTPSConnectionPool(host='liubk.com', port=443): Max retries exceeded with url: /sports/mens-water-polo/roster (Caused by NameResolutionError(""HTTPSConnection(host='liubk.com', port=443): Failed to resolve 'liubk.com' ([Errno -2] Name or service not known)""))"
