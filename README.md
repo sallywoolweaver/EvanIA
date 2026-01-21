@@ -1,44 +1,44 @@
-# NCAA Men's Water Polo Roster Scraper (Heights / Hometowns / Class→Grad Year / Team Record)
+# NCAA Men's Water Polo Roster Scraper (curated D1/varsity list)
 
-This project scrapes **official roster pages** for NCAA men’s water polo programs and outputs a single CSV with:
-- `school`
-- `record` (team record pulled from the NCAA RPI list)
-- `player`
-- `height_raw` (as shown on roster)
-- `height_in` (numeric inches when parseable)
-- `hometown`
-- `class_raw` (Fr/So/Jr/Sr/Gr etc, as shown)
-- `grad_year_est` (estimated graduation year)
+This project scrapes roster pages for a curated set of NCAA men's water polo programs
+and outputs a CSV (and optionally an Excel .xlsx) containing:
+
+- school
+- player_name
+- position
+- height
+- hometown
+- class_year
+- record (team W-L from NCAA RPI page, best-effort)
+- source_url
 
 ## Quick start
+
 ```bash
-python3 -m venv .venv
+cd waterpolo_d1_scraper
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python scrape_rosters.py --out ncaa_mwp_rosters.csv --grad_base_year 2026
+python scrape_rosters.py --out waterpolo_rosters.csv --xls waterpolo_rosters.xlsx
 ```
 
-### Notes on “graduation year”
-Most rosters list **class / academic year** (Fr/So/Jr/Sr/Gr), not an explicit graduation year.
-This scraper estimates graduation year from `--grad_base_year` (default: current year).
-Typical mapping:
-- Fr → base + 3
-- So → base + 2
-- Jr → base + 1
-- Sr → base
-- Gr / 5th → base (best-effort)
+## If you see “nothing outputted”
 
-If you want “class year” only, keep `class_raw` and ignore `grad_year_est`.
+This script **always** writes the output CSV you specify (even if empty) and will also
+write an `_errors.csv` file next to it when sites block scraping or have layouts the
+parser does not recognize.
 
-## Updating / adding teams
-Edit `teams.yaml`:
-- `school`: display name in output
-- `roster_url`: official athletics roster page URL
-- `ncaa_name`: name as it appears on NCAA RPI page (for record matching)
+Example:
 
-Then rerun the script.
+```bash
+python scrape_rosters.py --out waterpolo_rosters.csv
+# outputs: waterpolo_rosters.csv and maybe waterpolo_rosters_errors.csv
+```
 
-## Troubleshooting
-- Some athletics sites block aggressive scraping. Use `--sleep 1.0` (or higher).
-- If a roster is “card view” only, this script still usually works (it tries multiple parsers), but you may need to provide an alternate roster URL (table layout) in `teams.yaml`.
+## Notes
+
+- Some athletics websites block automated requests. If that happens, the error will be
+  captured in `*_errors.csv`.
+- NCAA RPI pages occasionally change URLs; the default is currently:
+  https://www.ncaa.com/rankings/waterpolo-men/nc/rpi

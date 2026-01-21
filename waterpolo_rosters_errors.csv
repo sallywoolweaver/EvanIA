@@ -1,16 +1,3 @@
 school,roster_url,error
-UCLA,https://uclabruins.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-USC,https://usctrojans.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Stanford,https://gostanford.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-San Jose State,https://sjsuspartans.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Long Beach State,https://longbeachstate.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Princeton,https://goprincetontigers.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-California Baptist,https://cbulancers.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Brown,https://brownbears.com/roster.aspx?path=mwpolo,No players parsed (site layout not recognized or content requires JS)
-George Washington,https://gwsports.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Air Force,https://goairforcefalcons.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Bucknell,https://bucknellbison.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
-Penn State Behrend,https://psblions.com/sports/mwaterpolo/2025-26/roster,No players parsed (site layout not recognized or content requires JS)
-Austin College,https://acroos.com/sports/mwaterpolo/2025-26/roster,No players parsed (site layout not recognized or content requires JS)
-Caltech,https://athletics.caltech.edu/sports/mens-water-polo/roster,"RuntimeError: Failed GET https://athletics.caltech.edu/sports/mens-water-polo/roster: HTTPSConnectionPool(host='athletics.caltech.edu', port=443): Max retries exceeded with url: /sports/mens-water-polo/roster (Caused by SSLError(SSLCertVerificationError(1, ""[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Hostname mismatch, certificate is not valid for 'athletics.caltech.edu'. (_ssl.c:1000)"")))"
-Whittier,https://poetsathletics.com/sports/mens-water-polo/roster,No players parsed (site layout not recognized or content requires JS)
+Stanford,https://gostanford.com/sports/mens-water-polo/roster,NameError: name 'parse_sidearm_text_roster' is not defined
+San Jose State,https://sjsuspartans.com/sports/mens-water-polo/roster,NameError: name 'parse_sidearm_text_roster' is not defined

@@ -36,6 +36,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -57,14 +58,41 @@ HEADERS = {
 
 TIMEOUT = 20
 
+# Some athletic sites have misconfigured TLS (e.g., hostname mismatch).
+# We keep verification enabled by default, but allow a narrow per-host bypass.
+TLS_VERIFY_BYPASS_HOSTS = {
+    "athletics.caltech.edu",
+}
+
 
 @dataclass
 class Team:
     school: str
     roster_url: str
     ncaa_name: Optional[str] = None  # name as it appears on NCAA page (optional)
+    division: str = ""  # optional, e.g., "D1" for NCAA Division I institution
+    record_url: Optional[str] = None  # optional fallback URL to scrape record if NCAA mapping fails
 
 
+# --- Optional JS rendering (Playwright) ------------------------------------
+# Many roster pages are static HTML, but some schools serve content that is
+# difficult to parse without a JS-capable renderer. When --js is enabled,
+# we will fall back to Playwright on parse failures.
+def fetch_html_playwright(url: str, timeout_ms: int = 30_000) -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        raise RuntimeError(
+            "Playwright is required for --js. Install with: pip install playwright && playwright install"
+        ) from e
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+        html = page.content()
+        browser.close()
+        return html
 def load_teams(path: Path) -> List[Team]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     teams = []
@@ -74,6 +102,8 @@ def load_teams(path: Path) -> List[Team]:
                 school=str(t["school"]).strip(),
                 roster_url=str(t["roster_url"]).strip(),
                 ncaa_name=(str(t.get("ncaa_name")).strip() if t.get("ncaa_name") else None),
+                division=(str(t.get("division")).strip() if t.get("division") else ""),
+                record_url=(str(t.get("record_url")).strip() if t.get("record_url") else None),
             )
         )
     if not teams:
@@ -85,7 +115,9 @@ def _request_get(url: str, max_retries: int = 3, sleep_s: float = 1.2) -> reques
     last_exc: Optional[Exception] = None
     for i in range(max_retries):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            host = (urlparse(url).hostname or "").lower()
+            verify = host not in TLS_VERIFY_BYPASS_HOSTS
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=verify)
             # Do not raise here; caller may want to handle non-200
             return r
         except Exception as e:
@@ -157,6 +189,38 @@ def fetch_ncaa_records(rpi_url: str) -> Dict[str, str]:
     return records
 
 
+def scrape_record_from_url(url: str) -> Optional[str]:
+    """Best-effort fallback: scrape an overall W-L record from a team site.
+
+    Different athletic sites present records inconsistently. This function
+    looks for a few common patterns (e.g., "Overall 12-5") while trying to
+    avoid matching irrelevant scores.
+    """
+    try:
+        html = fetch(url)
+    except Exception:
+        return None
+
+    # Normalize whitespace for regex matching.
+    text = re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" ", strip=True))
+
+    # Common patterns.
+    patterns = [
+        r"\bOverall\b\s*[:\-]?\s*(\d{1,2}\s*[-–]\s*\d{1,2})\b",
+        r"\bRecord\b\s*[:\-]?\s*(\d{1,2}\s*[-–]\s*\d{1,2})\b",
+        r"\bOverall\s*\(\s*(\d{1,2}\s*[-–]\s*\d{1,2})\s*\)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            rec = m.group(1)
+            rec = rec.replace("–", "-")
+            rec = re.sub(r"\s*[-]\s*", "-", rec)
+            return rec
+
+    return None
+
+
 def normalize_height(h: str) -> str:
     h = (h or "").strip()
     if not h:
@@ -175,8 +239,25 @@ def parse_sidearm_roster(soup: BeautifulSoup) -> List[dict]:
     rows = []
     players = soup.select(".sidearm-roster-player")
     if not players:
-        return rows
-
+        # Sidearm variant (accordion/list) used by some schools (e.g., UCLA/USC/Stanford).
+        # In this layout, each player card begins with the label 'Jersey Number'.
+        text = soup.get_text("\n", strip=True)
+        chunks = re.split(r"\bJersey Number\b", text)
+        out: List[Dict[str, str]] = []
+        for ch in chunks[1:]:
+            ls = [ln.strip() for ln in ch.split("\n") if ln.strip()]
+            if len(ls) < 2:
+                continue
+            number = ls[0]
+            name = ls[1]
+            # Try to capture hometown that appears after the 'Hometown' label.
+            hometown = ""
+            if "Hometown" in ls:
+                idx = ls.index("Hometown")
+                if idx + 1 < len(ls):
+                    hometown = ls[idx + 1]
+            out.append({"number": number, "name": name, "hometown": hometown})
+        return out
     for p in players:
         name = p.select_one(".sidearm-roster-player-name")
         if name:
@@ -207,6 +288,125 @@ def parse_sidearm_roster(soup: BeautifulSoup) -> List[dict]:
                 )
             )
     return rows
+
+
+def parse_sidearm_table_roster(soup: BeautifulSoup) -> List[dict]:
+    """Parse common Sidearm roster *table* layouts.
+
+    Many Sidearm sites render a <table> with columns like Name/Pos/Ht/Yr/Hometown.
+    """
+    rows: List[dict] = []
+    table = (
+        soup.select_one("table.sidearm-roster")
+        or soup.select_one("table.sidearm-roster-table")
+        or soup.select_one("table")
+    )
+    if not table:
+        return rows
+
+    try:
+        dfs = pd.read_html(str(table))
+    except Exception:
+        return rows
+
+    for df in dfs:
+        cols_raw = [str(c) for c in df.columns]
+        cols = [c.strip().lower() for c in cols_raw]
+        if not any("name" in c for c in cols):
+            continue
+        if not any(c in cols for c in ["pos", "position"]):
+            continue
+
+        name_col = df.columns[[i for i, c in enumerate(cols) if "name" in c][0]]
+        pos_col = df.columns[[i for i, c in enumerate(cols) if c in ["pos", "position"]][0]]
+        ht_col = df.columns[[i for i, c in enumerate(cols) if c in ["ht", "height"]][0]] if any(c in cols for c in ["ht", "height"]) else None
+        yr_col = df.columns[[i for i, c in enumerate(cols) if c in ["yr", "year", "class"]][0]] if any(c in cols for c in ["yr", "year", "class"]) else None
+        hometown_col = df.columns[[i for i, c in enumerate(cols) if "hometown" in c][0]] if any("hometown" in c for c in cols) else None
+
+        for _, r in df.iterrows():
+            nm = str(r[name_col]).strip()
+            if not nm or nm.lower() == "nan":
+                continue
+            rows.append(
+                dict(
+                    player_name=nm,
+                    position=str(r[pos_col]).strip() if pos_col is not None else "",
+                    height=normalize_height(str(r[ht_col]).strip()) if ht_col is not None else "",
+                    hometown=str(r[hometown_col]).strip() if hometown_col is not None else "",
+                    class_year=str(r[yr_col]).strip() if yr_col is not None else "",
+                )
+            )
+
+        if rows:
+            return rows
+
+    return rows
+
+
+def parse_sidearm_detail_text_roster(soup: BeautifulSoup) -> List[dict]:
+    """Parse Sidearm 'detail' roster pages where each player is rendered as a block of label/value text.
+
+    Typical cues include repeated strings like:
+      - 'Jersey Number'
+      - 'Position'
+      - 'Academic Year'
+      - 'Hometown'
+      - 'Full Bio for <NAME>'
+
+    This parser is intentionally permissive; if it can't find at least one complete player,
+    it returns an empty list.
+    """
+    text = soup.get_text("\n", strip=True)
+    if "Jersey Number" not in text or "Full Bio for" not in text:
+        return []
+
+    # Split into player blocks by the label that consistently appears at the start of each block.
+    blocks = text.split("Jersey Number")
+    out: List[dict] = []
+    for b in blocks[1:]:
+        # Keep only up to (and including) the end of this player's block.
+        # Sidearm includes a 'Full Bio for <NAME>' line per athlete.
+        if "Full Bio for" not in b:
+            continue
+        head, *_ = b.split("Full Bio for", 1)
+        lines = [ln.strip() for ln in head.splitlines() if ln.strip()]
+        if len(lines) < 3:
+            continue
+
+        # Most pages put the jersey number as the first line after 'Jersey Number'.
+        jersey = lines[0]
+        name = lines[1]
+
+        def _value_after(label: str) -> str:
+            try:
+                idx = lines.index(label)
+                return lines[idx + 1] if idx + 1 < len(lines) else ""
+            except ValueError:
+                return ""
+
+        pos = _value_after("Position")
+        year = _value_after("Academic Year") or _value_after("Year")
+        height = normalize_height(_value_after("Height"))
+        hometown = _value_after("Hometown")
+
+        # Fallback: some sites use 'Hometown / High School'.
+        if not hometown:
+            ht_hs = _value_after("Hometown / High School")
+            hometown = ht_hs.split("/")[0].strip() if ht_hs else ""
+
+        if name:
+            out.append(
+                dict(
+                    jersey_number=jersey,
+                    player_name=name,
+                    position=pos,
+                    height=height,
+                    hometown=hometown,
+                    class_year=year,
+                )
+            )
+
+    return out
 
 
 def parse_presto_roster(soup: BeautifulSoup) -> List[dict]:
@@ -284,7 +484,12 @@ def scrape_team_roster(team: Team) -> Tuple[List[dict], Optional[str]]:
             return [], f"HTTP {r.status_code}"
         soup = BeautifulSoup(r.text, "lxml")
 
+        # Try parsers in order of specificity. Sidearm has multiple layouts.
         rows = parse_sidearm_roster(soup)
+        if not rows:
+            rows = parse_sidearm_table_roster(soup)
+        if not rows:
+            rows = parse_sidearm_text_roster(soup)
         if not rows:
             rows = parse_presto_roster(soup)
 
@@ -302,10 +507,27 @@ def main() -> None:
     ap.add_argument("--xls", type=Path, default=None, help="Optional Excel .xlsx output path")
     ap.add_argument("--rpi-url", type=str, default=DEFAULT_RPI_URL, help="NCAA RPI URL used for team records")
     ap.add_argument("--team", type=str, default=None, help="Only scrape one school (matches teams.yaml school field)")
+    ap.add_argument(
+        "--division",
+        type=str,
+        default=None,
+        help="Optional filter (e.g., 'D1'). Matches the teams.yaml 'division' field.",
+    )
     ap.add_argument("--sleep", type=float, default=0.5, help="Sleep seconds between team requests")
     args = ap.parse_args()
 
     teams = load_teams(args.teams)
+    if not getattr(args, "all_divisions", False):
+        teams = [
+            t for t in teams
+            if str((t.get("division", "") if isinstance(t, dict) else getattr(t, "division", ""))).upper()
+            in ("D1", "DI", "DIVISION I", "NCAA D1")
+        ]
+    if args.division:
+        div = args.division.strip().lower()
+        teams = [t for t in teams if (t.division or "").strip().lower() == div]
+        if not teams:
+            raise SystemExit(f"No teams matched --division {args.division!r}")
     if args.team:
         teams = [t for t in teams if t.school.lower() == args.team.lower()]
         if not teams:
@@ -320,6 +542,8 @@ def main() -> None:
     for idx, team in enumerate(teams, start=1):
         ncaa_key = team.ncaa_name or team.school
         team_record = records.get(ncaa_key, records.get(team.school, ""))
+        if not team_record and team.record_url:
+            team_record = scrape_record_from_url(team.record_url) or ""
 
         rows, err = scrape_team_roster(team)
         if err:
