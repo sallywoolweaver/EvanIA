@@ -29,7 +29,15 @@ Optional:
 ## Run: SwimCloud 50 Free enrichment
 
 ```bash
-python enrich_swimcloud_50free.py --in waterpolo_rosters_2025.csv --out waterpolo_rosters_2025_with_50free.csv --xlsx waterpolo_rosters_2025_with_50free.xlsx
+python enrich_swimcloud_50free.py \
+  --in waterpolo_rosters_2025.csv \
+  --out waterpolo_rosters_2025_with_50free.csv \
+  --playwright \
+  --pw-user-data /home/compsci/Desktop/EvanIA/.pw_profile_swimcloud \
+  --timeout 25 \
+  --min-grad-year 2019 \
+  --checkpoint-every 50
+
 ```
 
 Notes:
