@@ -2,3 +2,6 @@
 .venv
 .venv/pyvenv.cfg
 __pycache__/wp_utils.cpython-312.pyc
+debug_html/*
+.pw_profile_swimcloud/*
+.pw_profile_swimcloud/
