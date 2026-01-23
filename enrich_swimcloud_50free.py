@@ -2,41 +2,23 @@
 """
 enrich_swimcloud_50free.py
 
-Enrich a roster CSV with a SwimCloud *best* 50 Freestyle time (ideally HS times).
+Enrich a roster CSV with a SwimCloud best 50 Freestyle time (typically HS times).
 
-Key fix vs prior versions:
-- SwimCloud search is a JS dropdown. The /search/?q=... page often embeds the dropdown
-  candidates in:  #global-search[data-global-search-items="...json..."]
-- We parse that attribute directly (fast + reliable) instead of waiting for a combobox.
+Key behavior:
+- SwimCloud "search" is a GLOBAL dropdown/autocomplete, not a traditional results page.
+- This script uses Playwright to:
+  1) pass the onboarding gate once (gender + zip) to set cookies
+  2) use the global search combobox
+  3) select the best candidate based on HS/hometown
+  4) navigate to /times/ and parse the 50 Free best time
 
-Workflow:
-- (Playwright) Complete onboarding gate once (gender + zip) to set cookies.
-- For each row:
-  - Clean name (remove "HS", dashes, trailing "Season", suffixes).
-  - Load /search/?q=<name>
-  - Parse candidates from #global-search data-global-search-items JSON
-  - Score candidates: HS match > hometown match > exact name
-  - Try top N candidates: open /swimmer/<id>/times/ and extract best 50 Free
-  - If found, write:
-      swimcloud_url
-      swimcloud_50free_time
-      swimcloud_50free_course
-      swimcloud_50free_note
-      swimcloud_matched_high_school
-
-Usage (recommended):
-  /home/compsci/Desktop/EvanIA/.venv/bin/python enrich_swimcloud_50free.py \
-    --in waterpolo_rosters_2025.csv \
-    --out waterpolo_rosters_2025_with_50free.csv \
-    --playwright \
-    --pw-headful \
-    --pw-user-data /home/compsci/Desktop/EvanIA/.pw_profile_swimcloud \
-    --debug-html /home/compsci/Desktop/EvanIA/debug_html \
-    --timeout 25 \
-    --sleep 0.6 \
-    --min-grad-year 2019
-
-If you want it faster once stable, drop --pw-headful.
+Outputs added/updated:
+  swimcloud_url
+  swimcloud_50free_time
+  swimcloud_50free_course
+  swimcloud_50free_note
+  swimcloud_high_school   (filled from SwimCloud if missing/empty)
+  swimcloud_grad_year     (if discoverable)
 """
 
 from __future__ import annotations
@@ -44,132 +26,111 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
-import html as html_lib
-import json
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
+
+# Optional: Playwright
+PW_AVAILABLE = False
+try:
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError  # type: ignore
+    PW_AVAILABLE = True
+except Exception:
+    PW_AVAILABLE = False
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
 except Exception:
     BeautifulSoup = None  # type: ignore
 
-PW_AVAILABLE = False
-try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError  # type: ignore
-
-    PW_AVAILABLE = True
-except Exception:
-    PW_AVAILABLE = False
-
-from urllib.parse import quote_plus
 
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 
+SWIMCLOUD_HOME = "https://www.swimcloud.com/"
+SWIMCLOUD_SEARCH = "https://www.swimcloud.com/search/"
+
+EVENT_KEYS = [
+    "50 Free",
+    "50 Freestyle",
+    "50 Yard Freestyle",
+    "50 Y Free",
+    "50 FR",
+    "50 Fr",
+]
+
 TIME_PAT = re.compile(r"\b(\d{1,2}:\d{2}\.\d{2}|\d{1,2}\.\d{2})\b")
 COURSE_PAT = re.compile(r"\b(SCY|SCM|LCM)\b", re.IGNORECASE)
 
-EVENT_KEYS = ["50 Free", "50 Freestyle", "50 Yard Freestyle", "50 Y Free", "50 FR"]
-
-CLASS_OF_PATTERNS = [
-    re.compile(r"\bClass of\s*(\d{4})\b", re.IGNORECASE),
-    re.compile(r"\bGraduation\s*Year\s*[:\-]?\s*(\d{4})\b", re.IGNORECASE),
-    re.compile(r"\bGrad(?:uation)?\s*[:\-]?\s*(\d{4})\b", re.IGNORECASE),
-]
-
-
-@dataclasses.dataclass
-class EnrichResult:
-    url: str = ""
-    time: str = ""
-    course: str = ""
-    note: str = ""
-    error: str = ""
-    matched_high_school: str = ""
-
+# ---------- utilities ----------
 
 def norm_space(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
 
-def norm_name(name: str) -> str:
+def clean_name(raw: str) -> str:
     """
-    Clean roster name strings that often contain garbage tokens from scraped rosters.
-    - Remove suffixes (JR/SR/II/III)
-    - Remove "HS", dashes, stray punctuation
-    - Remove trailing 'Season' (common Stanford layout bug)
+    Fix roster garbage like:
+      - "First Last Season"
+      - "First Last - Season"
+      - suffixes, class-year tags, punctuation
     """
-    name = norm_space(name)
-    # common junk tokens
-    name = re.sub(r"\b(Season)\b$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"\b(Season)\b", " ", name, flags=re.IGNORECASE)
-
-    # remove "HS" when it appears as a token
-    name = re.sub(r"\bHS\b", " ", name, flags=re.IGNORECASE)
-
-    # remove suffixes
-    name = re.sub(r"\b(JR\.?|SR\.?|FR\.?|SO\.?|II|III|IV)\b", " ", name, flags=re.IGNORECASE)
-
-    # normalize punctuation
-    name = name.replace("–", " ").replace("—", " ").replace("-", " ")
-    name = re.sub(r"[^A-Za-z\s']", " ", name)
-
-    name = norm_space(name)
-    return name
+    s = norm_space(raw)
+    # remove common garbage tokens
+    s = re.sub(r"\bSeason\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bRoster\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(Fr|So|Jr|Sr)\.?\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\((?:Fr|So|Jr|Sr)\.?\)", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(JR\.?|SR\.?|II|III|IV)\b", "", s, flags=re.IGNORECASE)
+    # drop stray hyphen separators
+    s = re.sub(r"\s*[-–—]\s*", " ", s)
+    # keep letters, spaces, apostrophes, hyphens
+    s = re.sub(r"[^A-Za-z\-\s']", " ", s)
+    s = norm_space(s)
+    return s
 
 
-def _token_set(s: str) -> set:
-    toks = [t.strip().lower() for t in re.split(r"[,\s]+", (s or "")) if t.strip()]
-    toks = [t for t in toks if len(t) >= 2]
-    return set(toks)
+def clean_high_school(raw: str) -> str:
+    s = norm_space(raw)
+    # remove "HS" standalone (but keep "High School" phrase)
+    s = re.sub(r"\bHS\b\.?", "", s, flags=re.IGNORECASE)
+    # remove weird punctuation/dashes
+    s = re.sub(r"\s*[-–—]\s*", " ", s)
+    s = norm_space(s)
+    return s
 
 
-def _name_similarity(a: str, b: str) -> int:
-    """
-    Cheap similarity:
-    - exact full match gets big points
-    - last name match gets moderate points
-    """
-    a = norm_name(a).lower()
-    b = norm_name(b).lower()
-    if not a or not b:
-        return 0
-    if a == b:
-        return 20
-    a_parts = a.split()
-    b_parts = b.split()
-    if len(a_parts) >= 2 and len(b_parts) >= 2 and a_parts[-1] == b_parts[-1]:
-        # last name match
-        score = 8
-        # first name initial/partial bonus
-        if a_parts[0][0] == b_parts[0][0]:
-            score += 2
-        return score
-    return 0
+def tokenize_place(s: str) -> List[str]:
+    s = (s or "").lower()
+    toks = re.split(r"[^a-z0-9]+", s)
+    toks = [t for t in toks if len(t) >= 3]
+    return toks
 
 
-def _overlap_score(a: str, b: str) -> int:
-    sa = _token_set(a)
-    sb = _token_set(b)
-    if not sa or not sb:
-        return 0
-    inter = sa.intersection(sb)
-    return min(10, len(inter))
+def last_name(name: str) -> str:
+    parts = norm_space(name).split()
+    return parts[-1].lower() if parts else ""
+
+
+def _normalize_times_url(url: str) -> str:
+    if not url:
+        return url
+    u = url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    if "/swimmer/" in u:
+        if not u.endswith("/times"):
+            u = u + "/times"
+        u = u + "/"
+    return u
 
 
 def _parse_time_to_seconds(t: str) -> Optional[float]:
-    if not t:
-        return None
-    t = t.strip()
+    t = (t or "").strip()
     m = re.fullmatch(r"(\d+):(\d{2})\.(\d{1,2})", t)
     if m:
         mins = int(m.group(1))
@@ -197,124 +158,207 @@ def _best_time_string(times: List[str]) -> Optional[str]:
     return best
 
 
-def _normalize_times_url(url: str) -> str:
-    if not url:
-        return url
-    u = url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    if "/swimmer/" in u and not u.endswith("/times"):
-        u = u + "/times"
-    return u.rstrip("/") + "/"
+@dataclasses.dataclass
+class EnrichResult:
+    url: str = ""
+    time: str = ""
+    course: str = ""
+    note: str = ""
+    swimcloud_high_school: str = ""
+    swimcloud_grad_year: str = ""
+    error: str = ""
 
 
-def extract_50free(html_txt: str) -> Tuple[str, str, str]:
+# ---------- SwimCloud page parsing ----------
+
+def parse_swimmer_header_info(html: str) -> Tuple[str, str, str]:
+    """
+    Attempt to parse:
+      displayed_name, high_school, grad_year
+    from the swimmer profile (or times) page.
+    This is heuristic and resilient to minor layout changes.
+    """
+    displayed = ""
+    hs = ""
+    grad = ""
+
+    if not html:
+        return displayed, hs, grad
+
+    low = html.lower()
+
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(html, "html.parser")
+
+        # name: common patterns are h1 / .c-title / etc.
+        h1 = soup.find("h1")
+        if h1:
+            displayed = norm_space(h1.get_text(" ", strip=True))
+
+        # try any obvious "High School" label
+        txt = soup.get_text("\n", strip=True)
+        m = re.search(r"High School\s*[:\-]?\s*([^\n]+)", txt, flags=re.IGNORECASE)
+        if m:
+            hs = norm_space(m.group(1))
+
+        # grad year
+        m = re.search(r"\bClass of\s*(20\d{2})\b", txt, flags=re.IGNORECASE)
+        if m:
+            grad = m.group(1)
+
+        # Some pages include "Graduation: 2024" or "Grad Year 2024"
+        if not grad:
+            m = re.search(r"\bGrad(?:uation)?\s*(?:Year)?\s*[:\-]?\s*(20\d{2})\b", txt, flags=re.IGNORECASE)
+            if m:
+                grad = m.group(1)
+
+    else:
+        # fallback regex-only
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            displayed = norm_space(re.sub(r"<[^>]+>", " ", m.group(1)))
+        m = re.search(r"High School\s*[:\-]?\s*([^\n<]+)", html, flags=re.IGNORECASE)
+        if m:
+            hs = norm_space(m.group(1))
+        m = re.search(r"\bClass of\s*(20\d{2})\b", html, flags=re.IGNORECASE)
+        if m:
+            grad = m.group(1)
+
+    # sanitize
+    displayed = clean_name(displayed) if displayed else displayed
+    hs = clean_high_school(hs)
+    return displayed, hs, grad
+
+
+def extract_50free_times(html_txt: str) -> Tuple[str, str, str]:
+    """
+    Return (best_time, course, note)
+    Stronger than the earlier version:
+      - collects multiple candidate times from the same event row
+      - tries to avoid relay splits by requiring the event label match
+    """
     low = (html_txt or "").lower()
     if "captcha" in low or "access denied" in low:
         return "", "", "blocked_or_captcha"
 
-    if BeautifulSoup is not None:
+    times_found: List[str] = []
+    course = ""
+
+    # Prefer structured parse
+    if BeautifulSoup is not None and html_txt:
         soup = BeautifulSoup(html_txt, "html.parser")
-        for node in soup.find_all(["tr", "li", "div"]):
-            txt = norm_space(node.get_text(" ", strip=True))
+
+        # Scan rows/blocks; match event label tightly
+        for row in soup.find_all(["tr", "li", "div"]):
+            txt = norm_space(row.get_text(" ", strip=True))
             if not txt:
                 continue
-            if not any(k.lower() in txt.lower() for k in EVENT_KEYS):
+            # Must contain an event keyword
+            if not any(re.search(rf"\b{re.escape(k)}\b", txt, flags=re.IGNORECASE) for k in EVENT_KEYS):
                 continue
-            m = TIME_PAT.search(txt)
-            if not m:
+            # Avoid obvious relay/split rows
+            if re.search(r"\brelay\b|\bsplit\b", txt, flags=re.IGNORECASE):
                 continue
-            t = m.group(1)
-            cm = COURSE_PAT.search(txt)
-            course = cm.group(1).upper() if cm else ""
-            return t, course, "soup_row_match"
 
-    # regex scan
-    for key in EVENT_KEYS:
-        k = key.lower()
-        start = 0
-        while True:
-            idx = low.find(k, start)
-            if idx == -1:
-                break
-            window = html_txt[max(0, idx - 500) : idx + 1500]
-            m = TIME_PAT.search(window)
-            if m:
-                t = m.group(1)
-                cm = COURSE_PAT.search(window)
-                course = cm.group(1).upper() if cm else ""
-                return t, course, "regex_window_match"
-            start = idx + len(k)
+            # Collect all time-like strings in this row
+            row_times = TIME_PAT.findall(txt)
+            if row_times:
+                times_found.extend(row_times)
+                cm = COURSE_PAT.search(txt)
+                if cm:
+                    course = cm.group(1).upper()
+                # If we found times in a clearly-matching row, we can stop scanning
+                # after gathering a decent set.
+                if len(times_found) >= 3:
+                    break
 
-    return "", "", "not_found"
+    # Regex fallback: look near the event label
+    if not times_found and html_txt:
+        for key in EVENT_KEYS:
+            k = key.lower()
+            start = 0
+            while True:
+                idx = low.find(k, start)
+                if idx == -1:
+                    break
+                window = html_txt[max(0, idx - 500) : idx + 2000]
+                if re.search(r"\brelay\b|\bsplit\b", window, flags=re.IGNORECASE):
+                    start = idx + len(k)
+                    continue
+                window_times = TIME_PAT.findall(window)
+                if window_times:
+                    times_found.extend(window_times)
+                    cm = COURSE_PAT.search(window)
+                    if cm:
+                        course = cm.group(1).upper()
+                    break
+                start = idx + len(k)
+
+    best = _best_time_string(times_found)
+    if not best:
+        return "", "", "not_found"
+
+    return best, course, "ok"
 
 
-def extract_class_of_year(html_txt: str) -> Optional[int]:
-    if not html_txt:
-        return None
-    txt = html_txt
-    for pat in CLASS_OF_PATTERNS:
-        m = pat.search(txt)
-        if m:
-            try:
-                y = int(m.group(1))
-                if 1900 <= y <= 2100:
-                    return y
-            except Exception:
-                pass
-    return None
+# ---------- Playwright SwimCloud search (dropdown) ----------
 
-
-def _debug_write(debug_dir: Optional[Path], filename: str, content: str) -> None:
+def debug_dump(page, debug_dir: Optional[Path], fname: str) -> None:
     if not debug_dir:
         return
     try:
         debug_dir.mkdir(parents=True, exist_ok=True)
-        (debug_dir / filename).write_text(content or "", encoding="utf-8", errors="ignore")
+        html = page.content()
+        (debug_dir / fname).write_text(html, encoding="utf-8", errors="ignore")
     except Exception:
         pass
 
 
-def _maybe_complete_swimcloud_onboarding(page, debug_dir: Optional[Path], zip_code: str, timeout_ms: int) -> bool:
+def maybe_complete_onboarding(page, debug_dir: Optional[Path], zip_code: str, timeout_ms: int) -> bool:
     """
-    SwimCloud sometimes redirects to onboarding:
-      "Start your college search! Select your gender ..."
-    We complete it once so cookies persist in the persistent context.
+    SwimCloud sometimes forces an onboarding gate (gender + zip) before search works.
+    Fill it once; cookies in persistent context usually prevent repeat gates.
     """
     try:
         page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
     except Exception:
         pass
 
-    html0 = ""
+    html = ""
     try:
-        html0 = page.content()
+        html = page.content()
     except Exception:
-        html0 = ""
+        html = ""
+    low = html.lower()
 
-    low = (html0 or "").lower()
-    if "start your college search" not in low and "select your gender" not in low:
+    if ("start your college search" not in low) and ("select your gender" not in low):
         return False
 
-    _debug_write(debug_dir, "pw_onboarding_gate.html", html0)
+    debug_dump(page, debug_dir, "pw_onboarding_gate.html")
 
-    # Click Male (any choice is fine)
-    try:
-        page.locator("text=Male").first.click(timeout=timeout_ms)
-    except Exception:
-        pass
+    # click Male (or any)
+    clicked = False
+    for sel in ["text=Male", "text=Female"]:
+        try:
+            page.locator(sel).first.click(timeout=2500)
+            clicked = True
+            break
+        except Exception:
+            continue
 
-    # Fill ZIP (try a few selectors)
+    # fill zip
     filled = False
     for sel in [
         'input[placeholder*="zip" i]',
         'input[name*="zip" i]',
-        'input[type="tel"]',
         'input[type="text"]',
-        "input",
+        'input[type="tel"]',
+        'input',
     ]:
         try:
             loc = page.locator(sel).first
             if loc.count() > 0:
-                loc.fill(zip_code, timeout=timeout_ms)
+                loc.fill(zip_code, timeout=2500)
                 filled = True
                 break
         except Exception:
@@ -326,232 +370,441 @@ def _maybe_complete_swimcloud_onboarding(page, debug_dir: Optional[Path], zip_co
         except Exception:
             pass
 
-    # Click any reasonable continue button if present
-    for label in ["Continue", "Next", "Submit", "Start", "Go"]:
+    # click a continue-ish button if present
+    for btn_text in ["Continue", "Next", "Submit", "Start", "Go"]:
         try:
-            page.get_by_role("button", name=re.compile(label, re.I)).click(timeout=1500)
+            page.get_by_role("button", name=re.compile(btn_text, re.I)).click(timeout=2500)
             break
         except Exception:
             continue
 
-    # Let it transition
+    # Do NOT wait for networkidle (can hang). Just allow a short settle.
     try:
-        page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+        page.wait_for_timeout(1200)
     except Exception:
         pass
 
     return True
 
 
-def ensure_search_page_ready(page, debug_dir: Optional[Path], zip_code: str, timeout_ms: int) -> None:
+def locate_global_search_input(page):
     """
-    Navigate to /search/ and ensure we're not stuck on onboarding.
-    Also ensure #global-search exists.
+    SwimCloud search UI varies; find a visible combobox/search input.
     """
-    page.set_default_timeout(timeout_ms)
-    page.set_default_navigation_timeout(timeout_ms)
-
-    page.goto("https://www.swimcloud.com/search/", wait_until="domcontentloaded")
-
-    # If onboarding gate, complete it and land back on /search/
-    _maybe_complete_swimcloud_onboarding(page, debug_dir, zip_code=zip_code, timeout_ms=timeout_ms)
-
-    # Now ensure global-search root exists (it is server-side in the HTML)
-    try:
-        page.wait_for_selector("#global-search", timeout=timeout_ms)
-    except Exception:
-        _debug_write(debug_dir, "pw_search_no_global_search.html", page.content())
-        raise RuntimeError("Search shell not present (#global-search missing).")
-
-
-def swimcloud_search_candidates(page, name_query: str, debug_dir: Optional[Path], timeout_ms: int) -> List[Dict[str, Any]]:
-    """
-    Go to /search/?q=<query> and parse candidates from #global-search[data-global-search-items].
-    This is the dropdown data.
-    """
-    q = norm_space(name_query)
-    url = f"https://www.swimcloud.com/search/?q={quote_plus(q)}"
-
-    page.goto(url, wait_until="domcontentloaded")
-
-    # Wait until the data attribute is populated (or at least present).
-    # The element exists server-side, but data-global-search-items can be empty briefly.
-    def has_items() -> bool:
+    selectors = [
+        "#global-search-select input",
+        "input[role='combobox']",
+        "input[aria-autocomplete='list']",
+        "input[type='search']",
+        "header input",
+    ]
+    for sel in selectors:
         try:
-            val = page.locator("#global-search").get_attribute("data-global-search-items") or ""
-            val = val.strip()
-            return val.startswith("[") and len(val) > 5
+            loc = page.locator(sel).filter(has_not=page.locator("[disabled]"))
+            # pick first visible
+            for i in range(min(loc.count(), 8)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    return el
         except Exception:
-            return False
+            continue
+    return None
 
-    ok = False
+
+def ensure_search_ready(page, debug_dir: Optional[Path], zip_code: str, timeout_ms: int) -> None:
+    """
+    Navigate to SwimCloud search and ensure the global search input exists.
+    Avoid networkidle waits (often hang).
+    """
+    # Navigate to /search/
+    try:
+        page.goto(SWIMCLOUD_SEARCH, wait_until="domcontentloaded", timeout=timeout_ms)
+    except Exception:
+        page.goto(SWIMCLOUD_HOME, wait_until="domcontentloaded", timeout=timeout_ms)
+
+    # If gate appears, complete it and go back to /search/
+    maybe_complete_onboarding(page, debug_dir, zip_code=zip_code, timeout_ms=timeout_ms)
+    try:
+        page.goto(SWIMCLOUD_SEARCH, wait_until="domcontentloaded", timeout=timeout_ms)
+    except Exception:
+        pass
+
+    # Wait for search input to appear
     t0 = time.time()
     while time.time() - t0 < (timeout_ms / 1000.0):
-        if has_items():
-            ok = True
+        inp = locate_global_search_input(page)
+        if inp is not None:
+            return
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+    debug_dump(page, debug_dir, "pw_search_not_hydrated.html")
+    raise RuntimeError("Search UI not hydrated (could not locate search combobox).")
+
+
+def collect_dropdown_candidates(page) -> List[Dict[str, str]]:
+    """
+    Return list of candidates from the open dropdown.
+    Attempts to extract swimmer links and visible text.
+    """
+    candidates: List[Dict[str, str]] = []
+
+    # Common patterns: listbox/options and/or anchors in a popup
+    option_selectors = [
+        "[role='listbox'] [role='option']",
+        "[role='option']",
+        ".Select-menu-outer .Select-option",  # old react-select
+        "div[id^='react-select-']",
+    ]
+
+    for sel in option_selectors:
+        try:
+            opts = page.locator(sel)
+            n = min(opts.count(), 12)
+            if n <= 0:
+                continue
+            for i in range(n):
+                o = opts.nth(i)
+                if not o.is_visible():
+                    continue
+                txt = ""
+                try:
+                    txt = norm_space(o.inner_text(timeout=1500))
+                except Exception:
+                    txt = ""
+
+                href = ""
+                # try to find an anchor inside
+                try:
+                    a = o.locator("a[href*='/swimmer/']").first
+                    if a.count() > 0:
+                        href = a.get_attribute("href") or ""
+                except Exception:
+                    href = ""
+
+                candidates.append({"text": txt, "href": href, "idx": str(i), "sel": sel})
+            if candidates:
+                break
+        except Exception:
+            continue
+
+    return candidates
+
+
+def score_candidate(text: str, target_name: str, hometown: str, high_school: str) -> int:
+    """
+    Heuristic score using:
+      - last name presence
+      - high school tokens match (strong)
+      - hometown tokens match (medium)
+    """
+    t = (text or "").lower()
+    score = 0
+
+    ln = last_name(target_name)
+    if ln and ln in t:
+        score += 4
+
+    hs_tokens = tokenize_place(high_school)
+    ht_tokens = tokenize_place(hometown)
+
+    # HS match dominates
+    for tok in hs_tokens:
+        if tok in t:
+            score += 3
+
+    # Hometown match if HS missing/weak
+    for tok in ht_tokens:
+        if tok in t:
+            score += 1
+
+    return score
+
+
+def names_compatible(target: str, displayed: str) -> bool:
+    """
+    Require last names match and first initial match if possible.
+    """
+    target = clean_name(target)
+    displayed = clean_name(displayed)
+    tparts = target.split()
+    dparts = displayed.split()
+    if len(tparts) < 2 or len(dparts) < 2:
+        return False
+    if tparts[-1].lower() != dparts[-1].lower():
+        return False
+    return tparts[0][0].lower() == dparts[0][0].lower()
+
+
+def dropdown_search_best_swimmer_url(
+    page,
+    name: str,
+    hometown: str,
+    high_school: str,
+    *,
+    debug_dir: Optional[Path],
+    zip_code: str,
+    timeout_ms: int,
+    min_grad_year: int,
+) -> Tuple[str, str, str, str]:
+    """
+    Uses the dropdown autocomplete to select the best swimmer candidate.
+
+    Returns:
+      (times_url, note, swimcloud_hs, swimcloud_grad_year)
+    """
+    ensure_search_ready(page, debug_dir, zip_code=zip_code, timeout_ms=timeout_ms)
+
+    inp = locate_global_search_input(page)
+    if inp is None:
+        debug_dump(page, debug_dir, "pw_no_search_input.html")
+        return "", "no_search_input", "", ""
+
+    # Build query: NAME only. (Do NOT include 'HS' or extra roster junk.)
+    qname = clean_name(name)
+
+    # Clear + type
+    try:
+        inp.click(timeout=1500)
+        # hard clear
+        inp.fill("", timeout=1500)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
+    except Exception:
+        pass
+
+    try:
+        # small delay typing triggers dropdown reliably
+        inp.type(qname, delay=40)
+    except Exception:
+        try:
+            inp.fill(qname)
+        except Exception:
+            return "", "search_input_fill_failed", "", ""
+
+    # Wait for dropdown options
+    t0 = time.time()
+    candidates: List[Dict[str, str]] = []
+    while time.time() - t0 < (timeout_ms / 1000.0):
+        candidates = collect_dropdown_candidates(page)
+        if candidates:
             break
         try:
             page.wait_for_timeout(250)
         except Exception:
             pass
 
-    html_now = page.content()
-    if not ok:
-        _debug_write(debug_dir, "pw_search_not_hydrated.html", html_now)
-        return []
+    if not candidates:
+        debug_dump(page, debug_dir, "pw_dropdown_empty.html")
+        return "", "no_dropdown_candidates", "", ""
 
-    raw = page.locator("#global-search").get_attribute("data-global-search-items") or ""
-    raw = raw.strip()
+    # Score candidates
+    scored = []
+    for c in candidates:
+        txt = c.get("text", "")
+        s = score_candidate(txt, qname, hometown, high_school)
+        scored.append((s, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
 
-    # attribute is HTML-escaped JSON
-    try:
-        items_json = html_lib.unescape(raw)
-        items = json.loads(items_json)
-        if isinstance(items, list):
-            return [x for x in items if isinstance(x, dict)]
-    except Exception:
-        _debug_write(debug_dir, "pw_search_bad_items_json.html", html_now)
+    # Try top K candidates; verify on swimmer page
+    tried = 0
+    for s, c in scored[:6]:
+        tried += 1
 
-    return []
+        # Click candidate option
+        prev_url = ""
+        try:
+            prev_url = page.url
+        except Exception:
+            prev_url = ""
+
+        try:
+            sel = c.get("sel", "[role='option']")
+            idx = int(c.get("idx", "0"))
+            page.locator(sel).nth(idx).click(timeout=2500)
+        except Exception:
+            # fallback: press Enter (sometimes selects first)
+            try:
+                page.keyboard.press("Enter")
+            except Exception:
+                continue
+
+        # Wait for navigation to swimmer
+        ok_nav = False
+        t1 = time.time()
+        while time.time() - t1 < 8.0:
+            try:
+                u = page.url
+            except Exception:
+                u = ""
+            if "/swimmer/" in u:
+                ok_nav = True
+                break
+            try:
+                page.wait_for_timeout(250)
+            except Exception:
+                pass
+
+        if not ok_nav:
+            # go back to search and try next
+            try:
+                page.goto(SWIMCLOUD_SEARCH, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception:
+                pass
+            continue
+
+        # Load HTML and verify identity/grad year
+        try:
+            page.wait_for_timeout(600)
+        except Exception:
+            pass
+
+        html = ""
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+
+        displayed, sc_hs, sc_grad = parse_swimmer_header_info(html)
+
+        # Name must be compatible (prevents wrong-person selection)
+        if displayed and not names_compatible(qname, displayed):
+            # try next candidate
+            try:
+                page.goto(SWIMCLOUD_SEARCH, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception:
+                pass
+            continue
+
+        # grad year sanity
+        if sc_grad:
+            try:
+                gy = int(sc_grad)
+                if gy < min_grad_year:
+                    try:
+                        page.goto(SWIMCLOUD_SEARCH, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except Exception:
+                        pass
+                    continue
+            except Exception:
+                pass
+
+        # Navigate to times page
+        swimmer_url = page.url
+        times_url = _normalize_times_url(swimmer_url)
+        try:
+            page.goto(times_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(800)
+        except Exception:
+            pass
+
+        note = f"ok;score={s};cand={displayed or c.get('text','')};tried={tried}"
+        return times_url, note, sc_hs, sc_grad
+
+    return "", f"no_verified_candidate;tried={min(len(scored),6)}", "", ""
 
 
-def score_candidate(item: Dict[str, Any], roster_name: str, roster_hometown: str, roster_hs: str) -> int:
+def fetch_times_html(page, times_url: str, timeout_ms: int, debug_dir: Optional[Path], debug_name: str) -> str:
     """
-    Score SwimCloud candidate dict.
-    item fields typically include: name, url, team (HS), location, source
+    Navigate to times_url and return rendered HTML.
+    Avoid networkidle waits.
     """
-    cand_name = norm_name(str(item.get("name", "") or ""))
-    cand_hs = norm_space(str(item.get("team", "") or ""))
-    cand_loc = norm_space(str(item.get("location", "") or ""))
-
-    score = 0
-    score += _name_similarity(roster_name, cand_name)
-
-    # HS is the strongest signal when present
-    if roster_hs:
-        score += 4 * _overlap_score(roster_hs, cand_hs)
-        # bonus if substring match (handles “Lamar High School”)
-        if roster_hs.lower() in cand_hs.lower() or cand_hs.lower() in roster_hs.lower():
-            score += 20
-
-    # hometown/location signal
-    if roster_hometown:
-        score += 2 * _overlap_score(roster_hometown, cand_loc)
-
-    # favor swimmers source explicitly
-    if str(item.get("source", "")).lower() == "swimmers":
-        score += 5
-
-    return score
-
-
-def fetch_page_playwright(page, url: str, timeout_ms: int, debug_dir: Optional[Path], debug_name: str = "") -> str:
-    page.set_default_timeout(timeout_ms)
-    page.set_default_navigation_timeout(timeout_ms)
-
-    page.goto(url, wait_until="domcontentloaded")
-
-    # Small scroll to trigger lazy load
     try:
-        page.mouse.wheel(0, 1800)
-        page.wait_for_timeout(350)
+        page.goto(times_url, wait_until="domcontentloaded", timeout=timeout_ms)
     except Exception:
         pass
 
-    try:
-        return page.content()
-    except Exception:
-        html_now = ""
+    # Wait for some hint of times content (best effort)
+    for sel in ["text=50", "text=Freestyle", "table", ".c-table", "main"]:
         try:
-            html_now = page.content()
+            page.locator(sel).first.wait_for(timeout=2500)
+            break
+        except Exception:
+            continue
+
+    try:
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+
+    html = ""
+    try:
+        html = page.content()
+    except Exception:
+        html = ""
+
+    if debug_dir and html:
+        safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", debug_name)[:80]
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / f"{safe}__times.html").write_text(html, encoding="utf-8", errors="ignore")
         except Exception:
             pass
-        if debug_name:
-            _debug_write(debug_dir, f"{debug_name}.html", html_now)
-        return ""
+
+    return html
 
 
-def find_best_50free_for_row(
+# ---------- main enrichment ----------
+
+def enrich_row_playwright(
+    row: Dict[str, str],
     page,
-    roster_name: str,
-    roster_hometown: str,
-    roster_hs: str,
+    *,
+    timeout_s: float,
     debug_dir: Optional[Path],
-    timeout_ms: int,
-    max_candidates: int,
+    zip_code: str,
     min_grad_year: int,
 ) -> EnrichResult:
-    roster_name_clean = norm_name(roster_name)
-    roster_hometown_clean = norm_space(roster_hometown)
-    roster_hs_clean = norm_space(roster_hs)
+    name = clean_name(row.get("name", "") or row.get("player_name", "") or "")
+    hometown = norm_space(row.get("hometown", "") or row.get("home_town", "") or "")
+    high_school = clean_high_school(
+        row.get("high_school", "") or row.get("hs", "") or row.get("previous_school", "") or row.get("school", "") or ""
+    )
 
-    if not roster_name_clean or len(roster_name_clean.split()) < 2:
+    if not name or len(name.split()) < 2:
         return EnrichResult(error="missing_or_bad_name")
 
-    # IMPORTANT: only search by NAME (not “HS”, not dashes, not extra tokens)
-    items = swimcloud_search_candidates(page, roster_name_clean, debug_dir, timeout_ms=timeout_ms)
-    if not items:
-        return EnrichResult(error="no_search_items", note="search_items_empty")
+    timeout_ms = int(float(timeout_s) * 1000)
 
-    swimmers = [it for it in items if str(it.get("source", "")).lower() == "swimmers" and "/swimmer/" in str(it.get("url", ""))]
-    if not swimmers:
-        return EnrichResult(error="no_swimmer_candidates", note="no_swimmers_in_items")
+    times_url, note, sc_hs, sc_grad = dropdown_search_best_swimmer_url(
+        page,
+        name=name,
+        hometown=hometown,
+        high_school=high_school,
+        debug_dir=debug_dir,
+        zip_code=zip_code,
+        timeout_ms=timeout_ms,
+        min_grad_year=min_grad_year,
+    )
+    if not times_url:
+        return EnrichResult(error="no_swimmer_url", note=note)
 
-    # Score + sort
-    scored: List[Tuple[int, Dict[str, Any]]] = []
-    for it in swimmers:
-        s = score_candidate(it, roster_name_clean, roster_hometown_clean, roster_hs_clean)
-        scored.append((s, it))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    html = fetch_times_html(page, times_url, timeout_ms, debug_dir, debug_name=name)
 
-    # Try top N candidates; stop on first with a 50 free time + (optional) grad year filter
-    tried = 0
-    for s, it in scored[: max_candidates if max_candidates > 0 else 8]:
-        tried += 1
-        href = str(it.get("url", "") or "")
-        if not href:
-            continue
-        if href.startswith("/"):
-            href = "https://www.swimcloud.com" + href
-        times_url = _normalize_times_url(href)
+    if not html:
+        return EnrichResult(url=times_url, error="empty_html", note=note, swimcloud_high_school=sc_hs, swimcloud_grad_year=sc_grad)
 
-        html_times = fetch_page_playwright(page, times_url, timeout_ms=timeout_ms, debug_dir=debug_dir, debug_name="")
-        if not html_times:
-            continue
-
-        # grad year sanity check (only if the page exposes it)
-        class_of = extract_class_of_year(html_times)
-        if class_of is not None and min_grad_year > 0 and class_of < min_grad_year:
-            continue
-
-        t, course, parse_note = extract_50free(html_times)
-        if t:
-            matched_hs = norm_space(str(it.get("team", "") or ""))
-            note = f"ok;score={s};cand={it.get('name','')};loc={it.get('location','')};parse={parse_note};tried={tried}"
-            return EnrichResult(
-                url=times_url,
-                time=t,
-                course=course,
-                note=note,
-                matched_high_school=matched_hs,
-            )
-
-    # If we got here: candidates existed, but no times parsed
-    # Save the top candidate times page for debugging
-    best = scored[0][1]
-    best_href = str(best.get("url", "") or "")
-    if best_href.startswith("/"):
-        best_href = "https://www.swimcloud.com" + best_href
-    best_times_url = _normalize_times_url(best_href)
-    html_best = fetch_page_playwright(page, best_times_url, timeout_ms=timeout_ms, debug_dir=debug_dir, debug_name="pw_best_candidate_times")
-    _debug_write(debug_dir, "pw_best_candidate_times.html", html_best)
+    best, course, parse_note = extract_50free_times(html)
+    if not best:
+        return EnrichResult(url=times_url, error=parse_note, note=f"{note};parse={parse_note}", swimcloud_high_school=sc_hs, swimcloud_grad_year=sc_grad)
 
     return EnrichResult(
-        url=best_times_url,
-        error="no_50free_found",
-        note=f"candidates={len(scored)} tried={min(len(scored), max_candidates)}",
-        matched_high_school=norm_space(str(best.get("team", "") or "")),
+        url=times_url,
+        time=best,
+        course=course,
+        note=f"{note};parse={parse_note}",
+        swimcloud_high_school=sc_hs,
+        swimcloud_grad_year=sc_grad,
     )
+
+
+def safe_checkpoint_write(df: pd.DataFrame, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    df.to_csv(tmp, index=False)
+    tmp.replace(out_path)
 
 
 def main() -> None:
@@ -561,74 +814,61 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--sleep", type=float, default=0.6)
     ap.add_argument("--timeout", type=float, default=25.0)
-    ap.add_argument("--playwright", action="store_true")
-    ap.add_argument("--pw-headful", action="store_true")
+
+    ap.add_argument("--playwright", action="store_true", help="Use Playwright (required for dropdown search).")
+    ap.add_argument("--pw-headful", action="store_true", help="Run Playwright headed (debug).")
     ap.add_argument(
         "--pw-user-data",
         dest="pw_user_data",
         default=str(Path.home() / ".pw_profile_swimcloud"),
-        help="Persistent user-data dir for Playwright context (cookies/cache).",
+        help="Persistent profile directory (cookies/session).",
     )
-    ap.add_argument("--pw-user-agent", dest="pw_user_agent", default=UA)
     ap.add_argument("--debug-html", dest="debug_html", default="")
-    ap.add_argument("--xlsx", dest="xlsx_path", default="")
     ap.add_argument("--zip", dest="zip_code", default="77005")
-    ap.add_argument("--max-candidates", type=int, default=8)
-    ap.add_argument("--min-grad-year", type=int, default=0)
+    ap.add_argument("--min-grad-year", dest="min_grad_year", type=int, default=2019)
+
+    ap.add_argument("--checkpoint-every", dest="checkpoint_every", type=int, default=50)
+
     args = ap.parse_args()
 
     in_path = Path(args.in_path)
     out_path = Path(args.out_path)
     debug_dir = Path(args.debug_html) if args.debug_html else None
-    xlsx_path = Path(args.xlsx_path) if args.xlsx_path else None
 
     if not in_path.exists():
         raise SystemExit(f"Input not found: {in_path}")
 
     df = pd.read_csv(in_path)
 
-    # standardize name column
     if "name" not in df.columns and "player_name" in df.columns:
         df["name"] = df["player_name"]
 
-    # ensure output columns exist
+    # Ensure output columns
     for c in [
         "swimcloud_url",
         "swimcloud_50free_time",
         "swimcloud_50free_course",
         "swimcloud_50free_note",
-        "swimcloud_matched_high_school",
+        "swimcloud_high_school",
+        "swimcloud_grad_year",
     ]:
         if c not in df.columns:
             df[c] = ""
 
-    # Try to locate hometown/high_school columns (your roster CSV varies by team)
-    def pick_col(cands: List[str]) -> str:
-        for c in cands:
-            if c in df.columns:
-                return c
-        return ""
-
-    col_hometown = pick_col(["hometown", "home_town", "location"])
-    col_hs = pick_col(["high_school", "hs", "previous_school", "school_prev", "prep_school"])
-
-    # limit handling
+    # Work subset
     if args.limit and args.limit > 0:
-        df_work = df.head(args.limit).copy()
-        df_rest = df.iloc[args.limit:].copy()
+        work_idx = df.index[: args.limit]
     else:
-        df_work = df.copy()
-        df_rest = None
+        work_idx = df.index
 
     errors: List[Dict[str, str]] = []
 
-    # Non-playwright mode is intentionally not supported for this UI anymore
     if not args.playwright:
-        raise SystemExit("Use --playwright for SwimCloud (dropdown search UI).")
+        raise SystemExit("This version requires --playwright because SwimCloud uses a dropdown autocomplete UI.")
 
     if not PW_AVAILABLE:
         raise SystemExit(
-            "Playwright not available. Install:\n"
+            "Playwright is not available. Install with:\n"
             "  pip install playwright\n"
             "  python -m playwright install chromium\n"
         )
@@ -638,68 +878,86 @@ def main() -> None:
     browser = None
     page = None
 
-    timeout_ms = int(float(args.timeout) * 1000)
-
     try:
         pw_ctx = sync_playwright()
         pw = pw_ctx.start()
         browser = pw.chromium.launch_persistent_context(
             args.pw_user_data,
             headless=not args.pw_headful,
-            user_agent=args.pw_user_agent,
+            user_agent=UA,
             viewport={"width": 1280, "height": 720},
             locale="en-US",
         )
         page = browser.pages[0] if browser.pages else browser.new_page()
 
-        # Ensure search page works and onboarding is completed once
-        ensure_search_page_ready(page, debug_dir, zip_code=str(args.zip_code), timeout_ms=timeout_ms)
+        n_done = 0
+        for idx in work_idx:
+            row = df.loc[idx].to_dict()
+            rdict = {k: ("" if pd.isna(v) else str(v)) for k, v in row.items()}
 
-        for i, row in df_work.iterrows():
-            rdict = {k: ("" if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
-
-            name_raw = rdict.get("name", "") or rdict.get("player_name", "")
-            hometown_raw = rdict.get(col_hometown, "") if col_hometown else ""
-            hs_raw = rdict.get(col_hs, "") if col_hs else ""
-
-            res = find_best_50free_for_row(
-                page=page,
-                roster_name=name_raw,
-                roster_hometown=hometown_raw,
-                roster_hs=hs_raw,
+            res = enrich_row_playwright(
+                rdict,
+                page,
+                timeout_s=float(args.timeout),
                 debug_dir=debug_dir,
-                timeout_ms=timeout_ms,
-                max_candidates=int(args.max_candidates),
+                zip_code=args.zip_code,
                 min_grad_year=int(args.min_grad_year),
             )
 
             if res.url:
-                df_work.at[i, "swimcloud_url"] = res.url
+                df.at[idx, "swimcloud_url"] = res.url
             if res.time:
-                df_work.at[i, "swimcloud_50free_time"] = res.time
+                df.at[idx, "swimcloud_50free_time"] = res.time
             if res.course:
-                df_work.at[i, "swimcloud_50free_course"] = res.course
+                df.at[idx, "swimcloud_50free_course"] = res.course
             if res.note:
-                df_work.at[i, "swimcloud_50free_note"] = res.note
-            if res.matched_high_school:
-                df_work.at[i, "swimcloud_matched_high_school"] = res.matched_high_school
+                df.at[idx, "swimcloud_50free_note"] = res.note
+            if res.swimcloud_high_school:
+                df.at[idx, "swimcloud_high_school"] = res.swimcloud_high_school
+                # If the roster HS field is empty, also backfill it
+                if not norm_space(str(df.at[idx, "high_school"] if "high_school" in df.columns else "")):
+                    if "high_school" in df.columns:
+                        df.at[idx, "high_school"] = res.swimcloud_high_school
+            if res.swimcloud_grad_year:
+                df.at[idx, "swimcloud_grad_year"] = res.swimcloud_grad_year
 
             if res.error:
                 errors.append(
                     {
-                        "row_index": str(i),
-                        "name": name_raw,
-                        "hometown": hometown_raw,
-                        "high_school": hs_raw,
+                        "row_index": str(idx),
+                        "name": rdict.get("name", ""),
+                        "hometown": rdict.get("hometown", ""),
+                        "high_school": rdict.get("high_school", ""),
+                        "school": rdict.get("school", "") or rdict.get("college", ""),
+                        "team": rdict.get("team", ""),
                         "error": res.error,
                         "note": res.note,
                         "url": res.url,
                     }
                 )
 
+            n_done += 1
+
+            # checkpoint write
+            if args.checkpoint_every and (n_done % int(args.checkpoint_every) == 0):
+                safe_checkpoint_write(df, out_path)
+
             time.sleep(max(0.0, float(args.sleep)))
 
     finally:
+        # Final write
+        safe_checkpoint_write(df, out_path)
+
+        if errors:
+            err_path = out_path.with_name(out_path.stem + "_errors.csv")
+            with open(err_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(errors[0].keys()))
+                w.writeheader()
+                w.writerows(errors)
+            print(f"[WARN] {len(errors)} rows missing 50 Free. See: {err_path}", file=sys.stderr)
+        else:
+            print("[OK] All rows enriched.", file=sys.stderr)
+
         if browser is not None:
             try:
                 browser.close()
@@ -710,26 +968,6 @@ def main() -> None:
                 pw_ctx.stop()
             except Exception:
                 pass
-
-    df_out = pd.concat([df_work, df_rest], ignore_index=False) if df_rest is not None else df_work
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df_out.to_csv(out_path, index=False)
-
-    if xlsx_path:
-        try:
-            df_out.to_excel(xlsx_path, index=False)
-        except Exception as e:
-            print(f"[WARN] XLSX export failed: {e}", file=sys.stderr)
-
-    if errors:
-        err_path = out_path.with_name(out_path.stem + "_errors.csv")
-        with open(err_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(errors[0].keys()))
-            w.writeheader()
-            w.writerows(errors)
-        print(f"[WARN] {len(errors)} rows missing 50 Free. See: {err_path}")
-    else:
-        print("[OK] All rows enriched.")
 
     print(f"[DONE] Wrote: {out_path}")
 
